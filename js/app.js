@@ -11,6 +11,7 @@ import {
   CLAUDE_MODELS, GEMINI_MODELS, listGeminiModels, saveGeminiModelList, loadGeminiModelList, analyzeChartImage, fileToBase64, aiMarketNews,
 } from './ai.js';
 import { drawChart, drawMini } from './chart.js';
+import { SmartWebSocket, NativeWebSocket, nativeSocketsAvailable } from './nativews.js';
 import { openStream, applyTick, applyKline } from './stream.js';
 import { getTiingoKey, setTiingoKey, testTiingoKey, tiingoUsage, tiingoTop, toTiingoTicker, parseQuote, probeWebSocket, subscribeMessage, TIINGO_WS } from './tiingo.js';
 import { exampleSeries } from './examples.js';
@@ -255,10 +256,11 @@ async function tickLive() {
   try {
     const streaming = live.stream && live.streamState === 'live';
     if (!streaming) {
-      // Tiingo حده 50 طلب/ساعة: بدون بث نجلب كل 90 ثانية فقط
-      const minGap = live.source === 'Tiingo' ? 90000 : 0;
+      // Tiingo حده 50 طلب/ساعة: بدون بث نحدّث من Twelve Data إن وُجد، وإلا من Tiingo كل 90 ثانية
+      const viaTD = live.source === 'Tiingo' && getTwelveKeys().length > 0;
+      const minGap = live.source === 'Tiingo' && !viaTD ? 90000 : 0;
       if (Date.now() - live.lastPoll >= minGap) {
-        const fresh = await getLatestCandles(live.symbol, live.interval, 3);
+        const fresh = await getLatestCandles(live.symbol, live.interval, 3, viaTD ? { provider: 'td' } : {});
         live.candles = mergeCandles(live.candles, fresh, 300);
         live.lastPoll = Date.now();
       }
@@ -531,7 +533,7 @@ function loadTiingoTickers() {
   tiingoTop(syms).then((rows) => rows.forEach((r) => show(r.ticker, r.mid))).catch(() => {});
   stopFxWatch();
   try {
-    const ws = new WebSocket('wss://api.tiingo.com/fx');
+    const ws = new SmartWebSocket('wss://api.tiingo.com/fx');
     fxWatch.ws = ws;
     ws.onopen = () => ws.send(JSON.stringify({ eventName: 'subscribe', authorization: getTiingoKey(), eventData: { thresholdLevel: 5, tickers: Object.keys(byTicker) } }));
     ws.onmessage = (ev) => {
@@ -804,7 +806,10 @@ async function runDiagnostics() {
     return { ok: b.ok, detail: `vision: ${a.detail} | binance.com: ${b.detail}` };
   });
   if (tiKey) {
-    await step('Tiingo — البث المباشر', async () => ws(await probeWebSocket(TIINGO_WS, { send: subscribeMessage(tiKey, ['eurusd']), timeoutMs: 12000 })));
+    if (nativeSocketsAvailable()) {
+      await step('Tiingo — البث المباشر (اتصال أصلي)', async () => ws(await probeWebSocket(TIINGO_WS, { send: subscribeMessage(tiKey, ['eurusd']), timeoutMs: 12000, WS: NativeWebSocket })));
+    }
+    await step('Tiingo — البث المباشر (المتصفح)', async () => ws(await probeWebSocket(TIINGO_WS, { send: subscribeMessage(tiKey, ['eurusd']), timeoutMs: 12000, WS: globalThis.WebSocket })));
     await step('Tiingo — الشموع (طلب واحد)', async () => {
       const q = await tiingoTop(['EUR/USD'], { key: tiKey, cacheMs: 0 });
       return { detail: q.length ? `EUR/USD = ${q[0].mid}` : 'رد فارغ' };
@@ -822,8 +827,10 @@ async function runDiagnostics() {
   if (!diagResults.some((r) => r.ok === true)) hints.push('لا يوجد اتصال بالإنترنت أو أن الشبكة تحجب كل المصادر.');
   else {
     hints.push(pass('Binance — البث') ? '✅ العملات الرقمية: بث مباشر لحظي.' : pass('Binance — الأسعار') ? '⚠️ العملات الرقمية: البث محجوب، التحديث كل 10 ثوانٍ بالطلبات.' : '❌ Binance لا يعمل من شبكتك.');
-    if (pass('Tiingo — البث')) hints.push('✅ الفوركس والذهب: بث Tiingo المباشر يعمل.');
-    else if (pass('Twelve Data')) hints.push(`⚠️ Tiingo ${fail('Tiingo') ? 'لا يعمل من شبكتك (غالباً حجب حسب الدولة — جرّب VPN)' : 'غير مضاف'} — الفوركس والذهب يعملان من Twelve Data.`);
+    if (pass('Tiingo — البث المباشر (اتصال أصلي)')) hints.push('✅ الفوركس والذهب: بث Tiingo المباشر يعمل (عبر الاتصال الأصلي للتطبيق).');
+    else if (pass('Tiingo — البث')) hints.push('✅ الفوركس والذهب: بث Tiingo المباشر يعمل.');
+    else if (pass('Tiingo — الشموع')) hints.push(`⚠️ شموع Tiingo تعمل لكن بثه المباشر لا يتصل من جهازك — الفوركس والذهب يتحدثان بالطلبات${pass('Twelve Data') ? ' (Twelve Data كل 10 ثوانٍ)' : ''}.`);
+    else if (pass('Twelve Data')) hints.push(`⚠️ Tiingo ${fail('Tiingo') ? 'لا يعمل من شبكتك (غالباً حجب — جرّب VPN)' : 'غير مضاف'} — الفوركس والذهب يعملان من Twelve Data.`);
     else hints.push('❌ لا يوجد مصدر يعمل للفوركس والذهب — أضف مفتاح Twelve Data.');
     hints.push(pass('جدول العملات — Frankfurter') ? '✅ جدول العملات العالمية يعمل.' : pass('جدول العملات — المصدر الاحتياطي') ? '✅ جدول العملات العالمية يعمل من المصدر الاحتياطي.' : '❌ جدول العملات العالمية لا يعمل.');
   }

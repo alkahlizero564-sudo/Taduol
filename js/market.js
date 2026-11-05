@@ -156,7 +156,7 @@ export const isTiingoSymbol = (symbol) => /^[A-Z]{3}\/[A-Z]{3}$/.test(normalizeT
 
 async function forexCandles(symbol, interval, limit, opts) {
   const errors = [];
-  if (getTiingoKey() && isTiingoSymbol(symbol) && !tiingoRestBlocked) {
+  if (opts.provider !== 'td' && getTiingoKey() && isTiingoSymbol(symbol) && !tiingoRestBlocked) {
     try {
       const c = await tiingoCandles(normalizeTDSymbol(symbol), interval, limit, opts.ttl != null ? { cacheMs: opts.ttl } : {});
       c.source = 'Tiingo';

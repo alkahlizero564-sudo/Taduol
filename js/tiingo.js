@@ -6,6 +6,8 @@
 //  • الأسعار اللحظية عبر WebSocket (لا يستهلك طلبات ولا يتأثر بـ CORS)
 // =====================================================================
 
+import { SmartWebSocket } from './nativews.js';
+
 const KEY_STORE = 'taduol.tiingo.v1';
 const USAGE_STORE = 'taduol.tiingo.usage.v1';
 export const TIINGO_LIMITS = { perHour: 50, perDay: 1000 };
@@ -190,7 +192,7 @@ export function parseQuote(msg, refPrice = () => undefined) {
  * فحص اتصال WebSocket عام: هل فُتح؟ هل وصلت رسالة؟ وما كود الإغلاق؟
  * @returns {Promise<{ok:boolean, opened:boolean, ms:number, code?:number, first?:string, detail:string}>}
  */
-export function probeWebSocket(url, { send, timeoutMs = 10000, WS = globalThis.WebSocket } = {}) {
+export function probeWebSocket(url, { send, timeoutMs = 10000, WS = SmartWebSocket } = {}) {
   return new Promise((resolve) => {
     const t0 = Date.now();
     let opened = false, done = false, ws;
@@ -207,7 +209,7 @@ export function probeWebSocket(url, { send, timeoutMs = 10000, WS = globalThis.W
   });
 }
 
-export function testTiingoKey(key, WS = globalThis.WebSocket, timeoutMs = 12000) {
+export function testTiingoKey(key, WS = SmartWebSocket, timeoutMs = 12000) {
   return new Promise((resolve, reject) => {
     if (!key) return reject(new Error('اكتب مفتاح Tiingo أولاً'));
     let done = false, opened = false;

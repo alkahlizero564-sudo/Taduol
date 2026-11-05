@@ -4,6 +4,7 @@
 //  • Tiingo: بث أسعار الفوركس والذهب (يحتاج مفتاح Tiingo)
 //  يعيد الاتصال تلقائياً، ويبلغ عن حالته حتى يرجع التطبيق للتحديث الدوري عند انقطاعه
 // =====================================================================
+import { SmartWebSocket } from './nativews.js';
 import { subscribeMessage, parseQuote, TIINGO_WS, toTiingoTicker } from './tiingo.js';
 
 export const INTERVAL_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '30m': 1800e3, '1h': 3600e3, '4h': 14400e3, '1d': 86400e3, '1w': 604800e3 };
@@ -49,7 +50,7 @@ const BINANCE_WS = ['wss://data-stream.binance.vision/ws', 'wss://stream.binance
  * @returns {{stop:()=>void}}
  */
 export function openStream(o) {
-  const WS = o.WS || globalThis.WebSocket;
+  const WS = o.WS || SmartWebSocket;
   let ws = null, stopped = false, attempt = 0, hostIdx = 0, beat = null, retryT = null;
   const status = (s) => o.onStatus?.(s);
 

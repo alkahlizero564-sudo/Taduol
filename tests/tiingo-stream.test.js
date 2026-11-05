@@ -177,3 +177,14 @@ test('Tiingo country block (Cloudflare 403 page) is reported as a block, not an 
   T._setHttp(async () => ({ status: 403, data: '<title>Access denied | api.tiingo.com used Cloudflare to restrict access</title> Error 1009 banned the country' }));
   await assert.rejects(() => T.tiingoCandles('EUR/JPY', '1h', 1), (e) => e.kind === 'blocked' && /يحجب/.test(e.message));
 });
+
+test('provider: "td" skips Tiingo even when a Tiingo key exists', async () => {
+  T.setTiingoKey('k'); M.setTwelveKeys(['td2']);
+  let tiingoCalled = false;
+  T._setHttp(async () => { tiingoCalled = true; return { status: 200, data: [] }; });
+  globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ status: 'ok', values: [{ datetime: '2026-11-05 11:00:00', open: '1', high: '2', low: '0.5', close: '1.3' }] }) });
+  const c = await M.getLatestCandles('NZD/USD', '1h', 3, { provider: 'td' });
+  assert.equal(c.source, 'Twelve Data');
+  assert.equal(tiingoCalled, false);
+  M.setTwelveKeys([]);
+});
