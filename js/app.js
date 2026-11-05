@@ -191,10 +191,9 @@ function initLive() {
   $('#chartFullBtn').onclick = openFull;
   initFull();
   try { const a = JSON.parse(store.get('taduol.account', '{}')); live.account = { balance: +a.balance || 0, risk: +a.risk || 1 }; } catch { live.account = { balance: 0, risk: 1 }; }
-  // عداد التحديث القادم + رسم حركة البث كل ثانية (خفيف: الشارت والسعر فقط)
+  // عداد التحديث القادم
   setInterval(() => {
     const el = $('#nextTick');
-    if (live.dirty && live.candles && !document.hidden) { live.dirty = false; renderChart(); renderPriceLine(); }
     if (!live.timer || !live.nextAt) { el.textContent = ''; return; }
     const s = Math.max(0, Math.ceil((live.nextAt - Date.now()) / 1000));
     el.textContent = document.hidden ? '⏸ متوقف أثناء إخفاء الصفحة' : `🔄 إعادة التحليل بعد ${s}ث`;
@@ -202,6 +201,24 @@ function initLive() {
 }
 
 const refreshSeconds = () => +($('#refreshEvery').value || 0);
+
+/**
+ * رسم حركة البث مع كل إطار شاشة (حتى ~60 مرة/ثانية) — الشارت فقط، بلا أي طلبات.
+ * سطر السعر والشريط العلوي يُحدَّثان 4 مرات/ثانية لتخفيف الحمل.
+ */
+function scheduleFrame() {
+  if (live.rafPending || document.hidden) return;
+  live.rafPending = true;
+  requestAnimationFrame(() => {
+    live.rafPending = false;
+    if (!live.candles) return;
+    renderChart({ light: true });
+    const now = Date.now();
+    if (now - (live.lastLineAt || 0) > 250) { live.lastLineAt = now; renderPriceLine(); }
+  });
+}
+// معدل التحديثات في الثانية (يُعرض بجانب حالة البث)
+setInterval(() => { live.tps = live.ticksPerSec || 0; live.ticksPerSec = 0; }, 1000);
 
 function scheduleRefresh() {
   clearInterval(live.timer); live.timer = null; live.nextAt = 0;
@@ -228,8 +245,8 @@ function startStream() {
     symbol: sym, interval: iv, source: src, key: getTiingoKey(),
     refPrice: () => live.candles?.[live.candles.length - 1]?.c,
     onStatus: (s) => { live.streamState = s; renderPriceLine(); renderBudget(); },
-    onKline: (k) => { if (live.symbol === sym && live.interval === iv) { live.candles = applyKline(live.candles, k); live.dirty = true; } },
-    onTick: (q) => { if (live.symbol === sym && live.interval === iv) { live.candles = applyTick(live.candles, q.price, q.t, iv); live.dirty = true; } },
+    onKline: (k) => { if (live.symbol === sym && live.interval === iv) { live.candles = applyKline(live.candles, k); scheduleFrame(); } },
+    onTick: (q) => { if (live.symbol === sym && live.interval === iv) { live.candles = applyTick(live.candles, q.price, q.t, iv); live.ticksPerSec = (live.ticksPerSec || 0) + 1; scheduleFrame(); } },
   });
 }
 
@@ -270,7 +287,7 @@ async function tickLive() {
     if (!streaming) {
       // Tiingo حده 50 طلب/ساعة: بدون بث نحدّث من Twelve Data إن وُجد، وإلا من Tiingo كل 90 ثانية
       const viaTD = live.source === 'Tiingo' && getTwelveKeys().length > 0;
-      const minGap = live.source === 'Tiingo' && !viaTD ? 90000 : 0;
+      const minGap = live.source === 'Tiingo' && !viaTD ? 90000 : isBinanceSymbol(live.symbol) ? 0 : 10000;
       if (Date.now() - live.lastPoll >= minGap) {
         const fresh = await getLatestCandles(live.symbol, live.interval, 3, viaTD ? { provider: 'td' } : {});
         live.candles = mergeCandles(live.candles, fresh, 300);
@@ -296,8 +313,8 @@ function renderAll(isTick = false) {
   if (!isTick || live.stable == null) { live.stable = r.direction; live.stableRes = r; live.pending = null; }
   else if (r.direction === live.stable) { live.stableRes = r; live.pending = null; }
   else {
-    live.pending = live.pending?.dir === r.direction ? { dir: r.direction, n: live.pending.n + 1 } : { dir: r.direction, n: 1 };
-    if (live.pending.n >= 2) { live.stable = r.direction; live.stableRes = r; live.pending = null; }
+    live.pending = live.pending?.dir === r.direction ? { ...live.pending, n: live.pending.n + 1 } : { dir: r.direction, n: 1, since: Date.now() };
+    if (live.pending.n >= 2 && Date.now() - live.pending.since >= 20000) { live.stable = r.direction; live.stableRes = r; live.pending = null; }
   }
   live.recentPatterns = detectPatterns(candles, { lookback: 30 });
   if (live.mtf) live.mtf[live.interval] = { rating: live.res.rating, at: Date.now() };
@@ -316,7 +333,7 @@ function renderPriceLine() {
   live.lastPrice = price;
   const d = live.lastDir || '';
   const src = streamSourceFor(live.symbol);
-  const streamTxt = live.stream ? ` · ${STREAM_LABEL[live.streamState] || ''}${src === 'tiingo' && live.source !== 'Tiingo' ? ' (Tiingo)' : ''}` : '';
+  const streamTxt = live.stream ? ` · ${STREAM_LABEL[live.streamState] || ''}${src === 'tiingo' && live.source !== 'Tiingo' ? ' (Tiingo)' : ''}${live.streamState === 'live' && live.tps ? ` <span class="muted">(${live.tps} تحديث/ث)</span>` : ''}` : '';
   $('#liveStatus').innerHTML = `<b class="price-tick ${d}">${esc(live.symbol)} ${fmt(price)} ${d === 'up' ? '▲' : d === 'down' ? '▼' : ''}</b> · ${esc(live.interval)} · الشموع من: ${esc(live.source || '—')}${streamTxt} · آخر تحليل ${new Date(live.lastRenderAt || Date.now()).toLocaleTimeString('ar-EG')}${live.sourceNote ? ` <span class="muted">(${esc(live.sourceNote)})</span>` : ''}`;
 }
 
@@ -410,10 +427,14 @@ function renderMTF() {
   const b2 = $('#mtfBtn2'); if (b2) b2.onclick = () => loadMTF(true);
 }
 
-function renderChart() {
+function renderChart({ light = false } = {}) {
   const res = live.stableRes || live.res;
   live.chart?.setData(live.candles, res, live.recentPatterns, live.interval);
-  if (live.big && !$('#chartFull').hidden) { live.big.setData(live.candles, res, live.recentPatterns, live.interval); renderFullHead(); }
+  if (live.big && !$('#chartFull').hidden) {
+    live.big.setData(live.candles, res, live.recentPatterns, live.interval);
+    const now = Date.now();
+    if (!light || now - (live.lastHeadAt || 0) > 250) { live.lastHeadAt = now; renderFullHead(); }
+  }
 }
 
 // ---------------- الشارت بشاشة كاملة ----------------
@@ -489,7 +510,7 @@ function renderPlan() {
       <div><div class="word">${DIR_AR[dir]}</div><div class="small">الميل: ${r.bias} · الترند: ${r.trendStrength}</div></div>
       <div class="meter"><div class="small">التوافق ${Math.round(r.confluence * 100)}% · الثقة ${r.confidence}%</div><div class="bar"><div class="fill" style="width:${r.confidence}%"></div></div></div>
     </div>
-    ${live.pending ? `<p class="pending-note">⏳ إشارة جديدة (${DIR_AR[live.pending.dir]}) قيد التأكيد — تحتاج تحليلاً آخر متطابقاً</p>` : ''}
+    ${live.pending ? `<p class="pending-note">⏳ إشارة جديدة (${DIR_AR[live.pending.dir]}) قيد التأكيد — يجب أن تستمر 20 ثانية (${Math.min(20, Math.round((Date.now() - live.pending.since) / 1000))}/20)</p>` : ''}
     ${waitNote}
     <div class="levels">
       <div class="level"><span>${r.entryType === 'limit' ? 'دخول بأمر معلّق (Limit)' : 'دخول فوري'}</span><b>${fmt(r.entry)}</b><span>منطقة: ${fmt(r.entryZone[0])} – ${fmt(r.entryZone[1])}</span></div>

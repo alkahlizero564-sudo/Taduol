@@ -42,7 +42,12 @@ export function applyKline(candles, k, max = 300) {
   return candles;
 }
 
-const BINANCE_WS = ['wss://data-stream.binance.vision/ws', 'wss://stream.binance.com:9443/ws'];
+// بث مدمج: كل صفقة منفذة (aggTrade — عشرات التحديثات في الثانية) + الشمعة الرسمية (kline — الحجم والتصحيح)
+const BINANCE_WS = ['wss://data-stream.binance.vision', 'wss://stream.binance.com:9443'];
+export const binanceStreamUrl = (base, symbol, interval) => {
+  const s = symbol.toLowerCase();
+  return `${base}/stream?streams=${s}@aggTrade/${s}@kline_${interval}`;
+};
 
 /**
  * @param {{symbol, interval, source:'binance'|'tiingo', key?, refPrice?:()=>number,
@@ -63,7 +68,7 @@ export function openStream(o) {
     if (stopped) return;
     status(attempt ? 'retry' : 'connecting');
     const url = o.source === 'binance'
-      ? `${BINANCE_WS[hostIdx % BINANCE_WS.length]}/${o.symbol.toLowerCase()}@kline_${o.interval}`
+      ? binanceStreamUrl(BINANCE_WS[hostIdx % BINANCE_WS.length], o.symbol, o.interval)
       : TIINGO_WS;
     try { ws = new WS(url); } catch { return scheduleRetry(); }
     ws.onopen = () => {
@@ -74,7 +79,13 @@ export function openStream(o) {
       watchdog();
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if (o.source === 'binance') {
-        const k = m.k; if (!k) return;
+        const d = m.data || m; // البث المدمج يغلّف الرسالة في data
+        if (d.e === 'aggTrade') {
+          const price = +d.p;
+          if (isFinite(price)) { attempt = 0; status('live'); o.onTick?.({ price, t: d.T || d.E || Date.now() }); }
+          return;
+        }
+        const k = d.k; if (!k) return;
         attempt = 0; status('live');
         o.onKline?.({ t: k.t, o: +k.o, h: +k.h, l: +k.l, c: +k.c, v: +k.v });
       } else {

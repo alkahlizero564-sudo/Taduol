@@ -115,12 +115,17 @@ class FakeWS {
 
 test('openStream (Binance): correct URL and kline updates', async () => {
   const klines = [], states = [];
-  const st = S.openStream({ symbol: 'BTCUSDT', interval: '15m', source: 'binance', WS: FakeWS, onKline: (k) => klines.push(k), onStatus: (s) => states.push(s) });
+  const ticks = [];
+  const st = S.openStream({ symbol: 'BTCUSDT', interval: '15m', source: 'binance', WS: FakeWS, onKline: (k) => klines.push(k), onTick: (q) => ticks.push(q), onStatus: (s) => states.push(s) });
   await new Promise((r) => setTimeout(r, 5));
-  assert.equal(FakeWS.last.url, 'wss://data-stream.binance.vision/ws/btcusdt@kline_15m');
-  FakeWS.last.emit({ e: 'kline', k: { t: 1000, o: '1', h: '2', l: '0.5', c: '1.5', v: '10' } });
+  assert.equal(FakeWS.last.url, 'wss://data-stream.binance.vision/stream?streams=btcusdt@aggTrade/btcusdt@kline_15m');
+  FakeWS.last.emit({ stream: 'btcusdt@kline_15m', data: { e: 'kline', k: { t: 1000, o: '1', h: '2', l: '0.5', c: '1.5', v: '10' } } });
   assert.deepEqual(klines[0], { t: 1000, o: 1, h: 2, l: 0.5, c: 1.5, v: 10 });
   assert.ok(states.includes('live'));
+  // كل صفقة منفذة تحرك السعر فوراً
+  FakeWS.last.emit({ stream: 'btcusdt@aggTrade', data: { e: 'aggTrade', p: '64010.5', T: 1700000000123 } });
+  FakeWS.last.emit({ stream: 'btcusdt@aggTrade', data: { e: 'aggTrade', p: '64011.0', T: 1700000000180 } });
+  assert.deepEqual(ticks, [{ price: 64010.5, t: 1700000000123 }, { price: 64011, t: 1700000000180 }]);
   st.stop();
   assert.ok(FakeWS.last.closed);
 });
