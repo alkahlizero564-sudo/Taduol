@@ -85,10 +85,24 @@
             <select id="liveInterval"></select>
           </label>
           <button id="liveBtn" class="btn primary">تحليل</button>
-          <label class="check"><input id="autoRefresh" type="checkbox" /> تحديث تلقائي كل 60 ثانية</label>
+          <label>التحديث التلقائي
+            <select id="refreshEvery">
+              <option value="10">كل 10 ثوانٍ</option>
+              <option value="30">كل 30 ثانية</option>
+              <option value="60">كل دقيقة</option>
+              <option value="0">إيقاف</option>
+            </select>
+          </label>
+          <span id="nextTick" class="small muted"></span>
           <button id="liveAiBtn" class="btn">🤖 رأي الذكاء الاصطناعي</button>
         </div>
         <div id="liveStatus" class="muted small"></div>
+        <div id="refreshNote" class="small muted"></div>
+      </div>
+
+      <div class="card" id="ratingCard">
+        <div id="ratingBox"><div class="empty">قراءة السوق بأشهر 26 مؤشراً تظهر هنا بعد التحليل.</div></div>
+        <div id="mtfBox"></div>
       </div>
 
       <div class="grid-live">

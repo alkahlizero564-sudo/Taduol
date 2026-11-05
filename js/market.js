@@ -89,7 +89,7 @@ export async function tdCandles(symbol, interval = '1h', limit = 300, opts = {})
   const sym = normalizeTDSymbol(symbol);
   const size = String(Math.min(limit, 5000));
   const j = await pool.request('/time_series', { symbol: sym, interval: iv, outputsize: size, timezone: 'UTC' },
-    { cost: 1, cacheKey: `ts|${sym}|${iv}|${size}`, onWait: opts.onWait });
+    { cost: 1, cacheKey: `ts|${sym}|${iv}|${size}`, onWait: opts.onWait, ttl: opts.ttl });
   const candles = parseTDSeries(j);
   if (!candles.length) throw new Error('لا توجد بيانات لهذا الرمز/الفريم');
   return candles;
@@ -112,6 +112,30 @@ export async function testTwelveKey(key) {
   const q = await pool.request('/quote', { symbol: 'EUR/USD' }, { key });
   if (!okQuote(q)) throw new Error('رد غير متوقع من Twelve Data');
   return `✓ يعمل — EUR/USD = ${q.close}`;
+}
+
+/**
+ * تحديث خفيف: آخر بضع شموع فقط (يُستخدم للتحديث كل 10 ثوانٍ)
+ * Binance: وزن صغير جداً — Twelve Data: طلب واحد من الرصيد
+ */
+export async function getLatestCandles(symbol, interval = '1h', n = 3, opts = {}) {
+  return getCandles(symbol, interval, n, { ...opts, ttl: opts.ttl ?? 8000 });
+}
+
+/** دمج الشموع الجديدة مع القديمة: تحديث الشمعة الحالية وإضافة الجديدة */
+export function mergeCandles(old, fresh, max = 300) {
+  if (!old?.length) return fresh.slice(-max);
+  const out = old.slice();
+  for (const k of fresh) {
+    const lastT = out[out.length - 1].t;
+    if (k.t === lastT) out[out.length - 1] = k;
+    else if (k.t > lastT) out.push(k);
+    else {
+      const i = out.findIndex((x) => x.t === k.t);
+      if (i >= 0) out[i] = k;
+    }
+  }
+  return out.slice(-max);
 }
 
 /** شموع: Binance للعملات الرقمية، و Twelve Data للفوركس والذهب والأسهم */

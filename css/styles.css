@@ -191,3 +191,26 @@ td.num { direction: ltr; text-align: left; font-variant-numeric: tabular-nums; }
 /* مساحة شريط الحالة والأزرار في تطبيق Android والهواتف ذات النتوء */
 .topbar { padding-top: calc(.8rem + env(safe-area-inset-top, 0px)); padding-left: calc(1rem + env(safe-area-inset-left, 0px)); padding-right: calc(1rem + env(safe-area-inset-right, 0px)); }
 .footer { padding-bottom: calc(2rem + env(safe-area-inset-bottom, 0px)); }
+
+/* ---- قراءة السوق ---- */
+.rating-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 1rem; align-items: start; }
+@media (max-width: 900px) { .rating-grid { grid-template-columns: 1fr; } }
+.rating-part { background: var(--bg); border-radius: 12px; padding: .7rem .9rem; }
+.rating-part h4 { margin: 0 0 .3rem; }
+.gauge { margin: .3rem 0 .5rem; }
+.gauge-word { font-weight: 800; font-size: 1.6rem; text-align: center; }
+.gauge.small .gauge-word { font-size: 1.15rem; }
+.gauge-track { position: relative; height: 10px; border-radius: 99px; margin: .4rem 0 .2rem;
+  background: linear-gradient(to left, var(--down), var(--warn) 50%, var(--up)); }
+.gauge-track i { position: absolute; top: -5px; width: 4px; height: 20px; margin-inline-start: -2px; background: var(--text); border-radius: 2px; transition: inset-inline-start .6s ease; }
+.gauge-scale { display: flex; justify-content: space-between; font-size: .7rem; color: var(--muted); }
+.gauge.small .gauge-scale { display: none; }
+.mtf-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: .5rem; }
+.mtf { background: var(--bg); border-radius: 10px; padding: .5rem; display: flex; flex-direction: column; align-items: center; gap: .1rem; border: 1px solid transparent; }
+.mtf.current { border-color: var(--accent); }
+#mtfBox h4 { margin: 1rem 0 .4rem; }
+.grid-2.tight { gap: .8rem; margin-top: .6rem; }
+.small-btn { padding: .3rem .7rem; font-size: .85rem; }
+.price-tick { transition: color .3s; }
+.price-tick.up { color: var(--up); } .price-tick.down { color: var(--down); }
+#nextTick { align-self: center; }

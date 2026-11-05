@@ -4,6 +4,7 @@
 // =====================================================================
 import { detectPatterns } from './patterns.js';
 import { computeAll, last, prevOf, supportResistance, fibonacci, pivots, swings } from './indicators.js';
+import { technicalRating } from './rating.js';
 
 /**
  * تحليل فني كامل لسلسلة شموع
@@ -123,7 +124,10 @@ export function analyze(candles) {
 
   // ---- النتيجة ----
   const totalW = signals.reduce((s, x) => s + x.weight, 0);
-  const score = signals.reduce((s, x) => s + x.vote, 0) / (totalW || 1); // من -1 إلى 1
+  const engineScore = signals.reduce((s, x) => s + x.vote, 0) / (totalW || 1); // من -1 إلى 1
+  // دمج محرك الشموع/المؤشرات الموزون مع التقييم الفني الشامل (26 مؤشراً)
+  const rating = technicalRating(candles, ind);
+  const score = 0.6 * engineScore + 0.4 * rating.overall;
   const confidence = Math.round(Math.min(95, Math.abs(score) * 100 * (a && a > 25 ? 1.15 : 0.95)));
   let direction = 'WAIT';
   if (score > 0.18) direction = 'BUY';
@@ -158,7 +162,7 @@ export function analyze(candles) {
   return {
     direction, bias, confidence, score: +score.toFixed(3), trendStrength,
     price, entry, stopLoss, targets, riskReward: +riskReward.toFixed(2), atr: atrV,
-    signals, patterns, levels, fib: fibonacci(candles), pivots: pivots(candles[candles.length - 2] || k),
+    signals, rating, patterns, levels, fib: fibonacci(candles), pivots: pivots(candles[candles.length - 2] || k),
     swings: sw, ind,
   };
 }
@@ -169,6 +173,7 @@ export function summaryForAI(res, symbol, interval) {
     `الرمز: ${symbol} | الفريم: ${interval} | السعر الحالي: ${fmt(res.price)}`,
     `نتيجة المحرك الفني: ${res.direction} | الميل: ${res.bias} | الثقة: ${res.confidence}% | قوة الترند: ${res.trendStrength}`,
     `ATR: ${fmt(res.atr)}`,
+    ...(res.rating ? [`التقييم الفني الشامل (26 مؤشراً): ${res.rating.label} (${res.rating.overall}) — المتوسطات: ${res.rating.ma.label} [شراء ${res.rating.ma.buy}/بيع ${res.rating.ma.sell}] — المذبذبات: ${res.rating.osc.label} [شراء ${res.rating.osc.buy}/بيع ${res.rating.osc.sell}]`] : []),
     'المؤشرات:',
     ...res.signals.map((s) => `- ${s.name}: ${s.value} → ${s.note}`),
     'الدعوم والمقاومات: ' + res.levels.map((l) => `${fmt(l.price)}(${l.touches})`).join(', '),

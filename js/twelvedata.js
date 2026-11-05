@@ -65,6 +65,8 @@ export class TDPool {
     this.keys = []; // { key, used: [timestamps], blockedUntil, invalid }
     this.cache = new Map();
     this.cacheTtl = 55000;
+    this.perDay = 800;
+    this.daily = loadDaily(); // { day: 'YYYY-MM-DD', counts: { hash: n } }
     this.maxWaitMs = 70000;
   }
 
@@ -82,12 +84,31 @@ export class TDPool {
   usable() { return this.keys.filter((k) => !k.invalid); }
 
   /** حالة كل مفتاح للعرض في الواجهة */
+  _today() { return new Date(this.now()).toISOString().slice(0, 10); }
+  _countDaily(k, n) {
+    const day = this._today();
+    if (this.daily.day !== day) this.daily = { day, counts: {} };
+    const h = keyHash(k.key);
+    this.daily.counts[h] = (this.daily.counts[h] || 0) + n;
+    saveDaily(this.daily);
+  }
+  /** عدد الطلبات المستخدمة اليوم لمفتاح */
+  usedToday(key) {
+    if (this.daily.day !== this._today()) return 0;
+    return this.daily.counts[keyHash(key)] || 0;
+  }
+  /** الرصيد اليومي المتبقي لكل المفاتيح الصالحة معاً */
+  remainingToday() {
+    return this.usable().reduce((s, k) => s + Math.max(0, this.perDay - this.usedToday(k.key)), 0);
+  }
+
   status() {
     return this.keys.map((k, i) => {
       this._prune(k);
       const blocked = k.blockedUntil > this.now();
       return {
         slot: i + 1, used: k.used.length, perMinute: this.perMinute, free: this.free(k),
+        today: this.usedToday(k.key), perDay: this.perDay,
         state: k.invalid ? 'invalid' : blocked ? (k.blockedUntil - this.now() > this.windowMs * 2 ? 'daily' : 'minute') : 'ok',
         waitMs: blocked ? k.blockedUntil - this.now() : 0,
       };
@@ -115,7 +136,7 @@ export class TDPool {
         throw new TDError(this.keys.length ? 'كل مفاتيح Twelve Data غير صالحة' : 'هذا الرمز يحتاج مفتاح Twelve Data — أضفه في صفحة "المفاتيح"', 'nokey');
       }
       const cand = this.usable().map((k) => ({ k, f: this.free(k) })).filter((x) => x.f >= need).sort((a, b) => b.f - a.f)[0];
-      if (cand) { for (let i = 0; i < need; i++) cand.k.used.push(this.now()); return cand.k; }
+      if (cand) { for (let i = 0; i < need; i++) cand.k.used.push(this.now()); this._countDaily(cand.k, need); return cand.k; }
       const wait = this._waitFor(need);
       if (!isFinite(wait) || wait > this.maxWaitMs) {
         throw new TDError('انتهى رصيد كل مفاتيح Twelve Data لليوم — أضف مفتاحاً آخر أو انتظر للغد', 'daily');
@@ -155,7 +176,7 @@ export class TDPool {
     const cost = o.cost || 1;
     if (o.cacheKey) {
       const hit = this.cache.get(o.cacheKey);
-      if (hit && this.now() - hit.t < this.cacheTtl) return hit.data;
+      if (hit && this.now() - hit.t < (o.ttl ?? this.cacheTtl)) return hit.data;
     }
     // مفتاح محدد (لزر الاختبار) — بدون منظِّم
     if (o.key) return this._http(path, params, o.key);
@@ -195,6 +216,20 @@ export class TDPool {
     return out;
   }
 }
+
+// ---------------- عدّاد الاستهلاك اليومي (محفوظ في المتصفح) ----------------
+const DAILY_STORE = 'taduol.td.daily.v1';
+/** بصمة قصيرة للمفتاح حتى لا نخزّن المفتاح نفسه مرة أخرى */
+export function keyHash(key) {
+  let h = 2166136261;
+  for (let i = 0; i < key.length; i++) { h ^= key.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(36);
+}
+function loadDaily() {
+  try { const j = JSON.parse(globalThis.localStorage?.getItem(DAILY_STORE) || 'null'); if (j && j.day && j.counts) return j; } catch { /* ignore */ }
+  return { day: '', counts: {} };
+}
+function saveDaily(d) { try { globalThis.localStorage?.setItem(DAILY_STORE, JSON.stringify(d)); } catch { /* ignore */ } }
 
 export const pool = new TDPool();
 pool.sync(getTwelveKeys());

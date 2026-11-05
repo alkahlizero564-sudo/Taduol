@@ -293,12 +293,90 @@ export function pivots(k) {
   return { P: p, R1: 2 * p - k.l, S1: 2 * p - k.h, R2: p + (k.h - k.l), S2: p - (k.h - k.l), R3: k.h + 2 * (p - k.l), S3: k.l - 2 * (k.h - p) };
 }
 
+// المتوسط الموزون خطياً
+export function wma(values, p) {
+  const out = new Array(values.length).fill(null);
+  const den = (p * (p + 1)) / 2;
+  for (let i = p - 1; i < values.length; i++) {
+    let s = 0, ok = true;
+    for (let j = 0; j < p; j++) { const v = values[i - p + 1 + j]; if (v == null) { ok = false; break; } s += v * (j + 1); }
+    if (ok) out[i] = s / den;
+  }
+  return out;
+}
+
+// متوسط هال (Hull MA) — سريع الاستجابة وقليل التأخير
+export function hma(values, p = 9) {
+  const half = wma(values, Math.max(1, Math.floor(p / 2))), full = wma(values, p);
+  const diff = values.map((_, i) => (half[i] != null && full[i] != null ? 2 * half[i] - full[i] : null));
+  return wma(diff, Math.max(1, Math.round(Math.sqrt(p))));
+}
+
+// المتوسط المرجح بالحجم
+export function vwma(c, p = 20) {
+  return c.map((_, i) => {
+    if (i < p - 1) return null;
+    let pv = 0, v = 0;
+    for (let j = i - p + 1; j <= i; j++) { pv += c[j].c * (c[j].v || 0); v += c[j].v || 0; }
+    return v ? pv / v : null;
+  });
+}
+
+// المذبذب الرائع (Awesome Oscillator)
+export function awesome(c) {
+  const mp = c.map((k) => (k.h + k.l) / 2);
+  const f = sma(mp, 5), s = sma(mp, 34);
+  return mp.map((_, i) => (f[i] != null && s[i] != null ? f[i] - s[i] : null));
+}
+
+// الزخم (Momentum)
+export function momentum(c, p = 10) {
+  return c.map((k, i) => (i >= p ? k.c - c[i - p].c : null));
+}
+
+// Stochastic RSI
+export function stochRsi(c, rp = 14, sp = 14, kp = 3, dp = 3) {
+  const r = rsi(c, rp);
+  const raw = r.map((v, i) => {
+    if (v == null || i < sp - 1) return null;
+    let hh = -Infinity, ll = Infinity;
+    for (let j = i - sp + 1; j <= i; j++) { if (r[j] == null) return null; hh = Math.max(hh, r[j]); ll = Math.min(ll, r[j]); }
+    return hh === ll ? 50 : ((v - ll) / (hh - ll)) * 100;
+  });
+  const k = smaNullable(raw, kp);
+  return { k, d: smaNullable(k, dp) };
+}
+
+// المذبذب النهائي (Ultimate Oscillator)
+export function ultimate(c, a = 7, b = 14, d = 28) {
+  const bp = [], tr = [];
+  c.forEach((k, i) => {
+    const pc = i ? c[i - 1].c : k.o;
+    bp.push(k.c - Math.min(k.l, pc));
+    tr.push(Math.max(k.h, pc) - Math.min(k.l, pc));
+  });
+  const avg = (i, p) => { let s1 = 0, s2 = 0; for (let j = i - p + 1; j <= i; j++) { s1 += bp[j]; s2 += tr[j]; } return s2 ? s1 / s2 : 0; };
+  return c.map((_, i) => (i < d ? null : (100 * (4 * avg(i, a) + 2 * avg(i, b) + avg(i, d))) / 7));
+}
+
+// قوة الثيران والدببة (Elder Bull/Bear Power)
+export function bullBear(c, p = 13) {
+  const e = ema(closes(c), p);
+  return c.map((k, i) => (e[i] == null ? null : (k.h - e[i]) + (k.l - e[i])));
+}
+
 // حساب كل المؤشرات دفعة واحدة
 export function computeAll(c) {
   const cl = closes(c);
   return {
     ema9: ema(cl, 9), ema20: ema(cl, 20), ema50: ema(cl, 50), ema200: ema(cl, 200),
     sma20: sma(cl, 20), sma50: sma(cl, 50),
+    ma: {
+      ema10: ema(cl, 10), sma10: sma(cl, 10), ema20: ema(cl, 20), sma20: sma(cl, 20), ema30: ema(cl, 30), sma30: sma(cl, 30),
+      ema50: ema(cl, 50), sma50: sma(cl, 50), ema100: ema(cl, 100), sma100: sma(cl, 100), ema200: ema(cl, 200), sma200: sma(cl, 200),
+      hma9: hma(cl, 9), vwma20: vwma(c, 20),
+    },
+    ao: awesome(c), mom: momentum(c), stochRsi: stochRsi(c), uo: ultimate(c), bbp: bullBear(c),
     rsi: rsi(c, 14), macd: macd(c), bb: bollinger(c), atr: atr(c, 14),
     stoch: stochastic(c), adx: adx(c), cci: cci(c), willr: williamsR(c), obv: obv(c), mfi: mfi(c),
     psar: psar(c), supertrend: supertrend(c), ichimoku: ichimoku(c), vwap: vwap(c),

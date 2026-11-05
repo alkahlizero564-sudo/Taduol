@@ -3,7 +3,9 @@
 // =====================================================================
 import { PATTERNS, PATTERN_MAP, detectPatterns } from './patterns.js';
 import { analyze, summaryForAI, fmt } from './analysis.js';
-import { getCandles, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, tdWatchlist, tdQuotes, getTwelveKeys, setTwelveKeys, testTwelveKey, tdPool, isBinanceSymbol, normalizeTDSymbol } from './market.js';
+import { computeAll } from './indicators.js';
+import { technicalRating, RATING_LABELS } from './rating.js';
+import { getCandles, getLatestCandles, mergeCandles, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, tdWatchlist, tdQuotes, getTwelveKeys, setTwelveKeys, testTwelveKey, tdPool, isBinanceSymbol, normalizeTDSymbol } from './market.js';
 import {
   loadSlots, saveSlots, resolveSlot, activeSlots, detectProvider, testSlot, SLOT_COUNT,
   CLAUDE_MODELS, GEMINI_MODELS, listGeminiModels, saveGeminiModelList, loadGeminiModelList, analyzeChartImage, fileToBase64, aiMarketNews,
@@ -162,36 +164,166 @@ function listChips(title, items) {
 // =====================================================================
 //  السوق المباشر
 // =====================================================================
-const live = { candles: null, res: null, timer: null, symbol: '', interval: '' };
+const live = { candles: null, res: null, timer: null, symbol: '', interval: '', busy: false, ticks: 0, nextAt: 0, lastPrice: null, mtf: {} };
+const MTF_FRAMES = ['15m', '1h', '4h', '1d'];
 
 function initLive() {
   $('#liveBtn').onclick = () => loadLive();
   $('#liveSymbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadLive(); });
   $('#liveInterval').onchange = () => live.candles && loadLive();
-  $('#autoRefresh').onchange = (e) => {
-    clearInterval(live.timer);
-    if (e.target.checked) live.timer = setInterval(() => loadLive(true), 60000);
-  };
+  const sel = $('#refreshEvery');
+  sel.value = store.get('taduol.refreshEvery', '10');
+  sel.onchange = () => { store.set('taduol.refreshEvery', sel.value); scheduleRefresh(); };
   $('#liveAiBtn').onclick = runLiveAI;
   window.addEventListener('resize', () => { if (live.candles && $('#tab-live').classList.contains('active')) renderChart(); });
+  // عداد التحديث القادم
+  setInterval(() => {
+    const el = $('#nextTick');
+    if (!live.timer || !live.nextAt) { el.textContent = ''; return; }
+    const s = Math.max(0, Math.ceil((live.nextAt - Date.now()) / 1000));
+    el.textContent = document.hidden ? '⏸ متوقف أثناء إخفاء الصفحة' : `🔄 التحديث بعد ${s}ث`;
+  }, 500);
 }
 
-async function loadLive(silent = false) {
+const refreshSeconds = () => +($('#refreshEvery').value || 0);
+
+function scheduleRefresh() {
+  clearInterval(live.timer); live.timer = null; live.nextAt = 0;
+  const sec = refreshSeconds();
+  if (!sec || !live.candles) { renderBudget(); return; }
+  live.nextAt = Date.now() + sec * 1000;
+  live.timer = setInterval(() => { live.nextAt = Date.now() + sec * 1000; tickLive(); }, sec * 1000);
+  renderBudget();
+}
+
+/** تحميل كامل: 300 شمعة + تحليل + الفريمات المتعددة */
+async function loadLive() {
   const raw = $('#liveSymbol').value.trim().toUpperCase();
   const sym = isBinanceSymbol(raw) ? raw : normalizeTDSymbol(raw);
   const iv = $('#liveInterval').value;
   const st = $('#liveStatus');
-  if (!silent) st.innerHTML = '<span class="spinner"></span> جاري جلب البيانات...';
+  st.innerHTML = '<span class="spinner"></span> جاري جلب البيانات...';
+  live.busy = true;
   try {
     const candles = await getCandles(sym, iv, 300, { onWait: (sec) => { st.innerHTML = `<span class="spinner"></span> تم استهلاك رصيد الدقيقة — انتظار ${sec} ثانية ثم المتابعة تلقائياً...`; } });
-    live.candles = candles; live.symbol = sym; live.interval = iv;
-    live.res = analyze(candles);
-    live.recentPatterns = detectPatterns(candles, { lookback: 30 });
-    renderChart(); renderPlan(); renderSignals(); renderPatterns(); renderLevels();
-    st.textContent = `${sym} · ${iv} · المصدر: ${isBinanceSymbol(sym) ? 'Binance' : 'Twelve Data'} · آخر تحديث ${new Date().toLocaleTimeString('ar-EG')} · ${candles.length} شمعة`;
+    const changed = sym !== live.symbol;
+    live.candles = candles; live.symbol = sym; live.interval = iv; live.lastPrice = null; live.ticks = 0;
+    if (changed) live.mtf = {};
+    renderAll();
+    scheduleRefresh();
+    // الفريمات المتعددة: تلقائياً لـ Binance، وبالزر فقط لـ Twelve Data (لتوفير الرصيد)
+    if (isBinanceSymbol(sym)) loadMTF(false); else renderMTF();
   } catch (e) {
     st.innerHTML = `<span class="down">❌ ${esc(e.message)}</span> — ${isBinanceSymbol(sym) ? 'تأكد أن الرمز صحيح على Binance (مثل BTCUSDT).' : 'للفوركس والذهب استخدم صيغة مثل EUR/USD أو XAU/USD.'}`;
-  }
+  } finally { live.busy = false; }
+}
+
+/** تحديث خفيف كل 10 ثوانٍ: آخر 3 شموع فقط ثم إعادة التحليل */
+async function tickLive() {
+  if (live.busy || !live.candles || document.hidden) return;
+  live.busy = true;
+  try {
+    const fresh = await getLatestCandles(live.symbol, live.interval, 3);
+    live.candles = mergeCandles(live.candles, fresh, 300);
+    live.ticks++;
+    renderAll(true);
+    // تحديث الفريمات المتعددة كل دقيقة تقريباً (Binance فقط)
+    if (isBinanceSymbol(live.symbol) && live.ticks % Math.max(1, Math.round(60 / refreshSeconds())) === 0) loadMTF(false);
+  } catch (e) {
+    $('#liveStatus').innerHTML = `<span class="down">⚠️ تعذر التحديث: ${esc(e.message)}</span> — سنحاول مرة أخرى`;
+  } finally { live.busy = false; }
+}
+
+function renderAll(isTick = false) {
+  const candles = live.candles;
+  live.res = analyze(candles);
+  live.recentPatterns = detectPatterns(candles, { lookback: 30 });
+  if (live.mtf) live.mtf[live.interval] = { rating: live.res.rating, at: Date.now() };
+  renderChart(); renderPlan(); renderRating(); renderSignals(); renderPatterns(); renderLevels(); renderMTF();
+  const price = candles[candles.length - 1].c;
+  const dir = live.lastPrice == null ? '' : price > live.lastPrice ? 'up' : price < live.lastPrice ? 'down' : '';
+  live.lastPrice = price;
+  $('#liveStatus').innerHTML = `<b class="price-tick ${dir}">${esc(live.symbol)} ${fmt(price)} ${dir === 'up' ? '▲' : dir === 'down' ? '▼' : ''}</b> · ${esc(live.interval)} · المصدر: ${isBinanceSymbol(live.symbol) ? 'Binance' : 'Twelve Data'} · آخر تحديث ${new Date().toLocaleTimeString('ar-EG')}${isTick ? '' : ` · ${candles.length} شمعة`}`;
+  renderBudget();
+}
+
+/** تنبيه رصيد Twelve Data عند التحديث السريع */
+function renderBudget() {
+  const box = $('#refreshNote');
+  const sec = refreshSeconds();
+  if (!live.symbol || isBinanceSymbol(live.symbol) || !sec) { box.textContent = sec && live.symbol ? 'Binance: التحديث كل ' + sec + ' ثوانٍ مجاني وبلا حد يومي.' : ''; return; }
+  const left = tdPool.remainingToday();
+  const perHour = Math.round(3600 / sec);
+  const hours = perHour ? left / perHour : 0;
+  box.innerHTML = `Twelve Data: كل تحديث = طلب واحد (${perHour} طلب/ساعة). المتبقي اليوم لكل مفاتيحك: <b>${left}</b> طلب ≈ <b>${hours >= 1 ? hours.toFixed(1) + ' ساعة' : Math.round(hours * 60) + ' دقيقة'}</b> بهذا المعدل.${hours < 1 ? ' <span class="down">اختر 30 أو 60 ثانية لتوفير الرصيد.</span>' : ''}`;
+}
+
+/** التقييم على عدة فريمات */
+async function loadMTF(manual) {
+  const sym = live.symbol;
+  const frames = MTF_FRAMES.filter((f) => f !== live.interval);
+  if (!isBinanceSymbol(sym) && manual) $('#mtfBox').insertAdjacentHTML('beforeend', '<p class="muted small" id="mtfWait"><span class="spinner"></span> جاري حساب الفريمات (طلب لكل فريم)...</p>');
+  await Promise.all(frames.map(async (f) => {
+    try {
+      const c = await getCandles(sym, f, 300, { ttl: 55000 });
+      if (sym !== live.symbol) return;
+      live.mtf[f] = { rating: technicalRating(c, computeAll(c)), at: Date.now() };
+    } catch (e) { live.mtf[f] = { error: e.message, at: Date.now() }; }
+  }));
+  if (sym === live.symbol) renderMTF();
+}
+
+function gaugeHTML(score, label, size = 'big') {
+  const pct = Math.round(((Math.max(-1, Math.min(1, score)) + 1) / 2) * 100);
+  const L = RATING_LABELS[label];
+  return `<div class="gauge ${size}">
+    <div class="gauge-word ${L.cls}">${L.ar}</div>
+    <div class="gauge-track"><i style="inset-inline-start:${pct}%"></i></div>
+    <div class="gauge-scale"><span>بيع قوي</span><span>بيع</span><span>محايد</span><span>شراء</span><span>شراء قوي</span></div>
+  </div>`;
+}
+
+function renderRating() {
+  const r = live.res.rating;
+  const cnt = (s) => `<span class="down">بيع ${s.sell}</span> · <span class="flat">محايد ${s.neutral}</span> · <span class="up">شراء ${s.buy}</span>`;
+  const row = (x) => `<tr><td>${esc(x.name)}</td><td class="num">${x.value == null ? '—' : fmt(x.value)}</td><td class="${x.vote > 0 ? 'up' : x.vote < 0 ? 'down' : 'flat'}">${x.vote == null ? '—' : x.vote > 0 ? 'شراء' : x.vote < 0 ? 'بيع' : 'محايد'}</td></tr>`;
+  $('#ratingBox').innerHTML = `
+    <div class="rating-grid">
+      <div class="rating-main">
+        <h3>📊 قراءة السوق — ${esc(live.symbol)} · ${esc(live.interval)}</h3>
+        ${gaugeHTML(r.overall, r.label)}
+        <p class="small">${r.counts.buy + r.counts.sell + r.counts.neutral} مؤشراً: ${cnt(r.counts)}</p>
+        <p class="small">${live.res.direction === 'BUY' ? '📈 السوق يميل للصعود' : live.res.direction === 'SELL' ? '📉 السوق يميل للهبوط' : '↔️ السوق متذبذب بلا اتجاه واضح'} — قوة الترند (ADX): ${esc(live.res.trendStrength)}</p>
+      </div>
+      <div class="rating-part"><h4>المتوسطات المتحركة (${r.ma.items.length})</h4>${gaugeHTML(r.ma.score, r.ma.label, 'small')}<p class="small">${cnt(r.ma)}</p></div>
+      <div class="rating-part"><h4>المذبذبات (${r.osc.items.length})</h4>${gaugeHTML(r.osc.score, r.osc.label, 'small')}<p class="small">${cnt(r.osc)}</p></div>
+    </div>
+    <details><summary>تفاصيل كل المؤشرات</summary>
+      <div class="grid-2 tight">
+        <div class="table-wrap"><table><thead><tr><th>المتوسط</th><th>القيمة</th><th>الإشارة</th></tr></thead><tbody>${r.ma.items.map(row).join('')}</tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>المذبذب</th><th>القيمة</th><th>الإشارة</th></tr></thead><tbody>${r.osc.items.map(row).join('')}</tbody></table></div>
+      </div>
+    </details>`;
+}
+
+function renderMTF() {
+  const box = $('#mtfBox');
+  if (!live.symbol) { box.innerHTML = ''; return; }
+  const frames = [...new Set([...MTF_FRAMES, live.interval])].sort((a, b) => INTERVALS.indexOf(a) - INTERVALS.indexOf(b));
+  const cells = frames.map((f) => {
+    const m = live.mtf[f];
+    const cur = f === live.interval ? ' current' : '';
+    if (!m) return `<div class="mtf${cur}"><b>${f}</b><span class="muted small">${isBinanceSymbol(live.symbol) ? '<span class="spinner"></span>' : '—'}</span></div>`;
+    if (m.error) return `<div class="mtf${cur}"><b>${f}</b><span class="down small">خطأ</span></div>`;
+    const L = RATING_LABELS[m.rating.label];
+    return `<div class="mtf${cur}"><b>${f}</b><span class="${L.cls}">${L.ar}</span><span class="muted small">${m.rating.counts.buy}↑ ${m.rating.counts.sell}↓</span></div>`;
+  }).join('');
+  const ratings = frames.map((f) => live.mtf[f]?.rating?.overall).filter((x) => x != null);
+  const agree = ratings.length > 1 && (ratings.every((x) => x > 0.1) || ratings.every((x) => x < -0.1));
+  box.innerHTML = `<h4>الاتجاه على عدة فريمات</h4><div class="mtf-row">${cells}</div>
+    <p class="small ${agree ? (ratings[0] > 0 ? 'up' : 'down') : 'muted'}">${agree ? '✅ كل الفريمات متفقة — إشارة أقوى' : ratings.length > 1 ? '⚠️ الفريمات غير متفقة — كن حذراً' : ''}</p>
+    ${!isBinanceSymbol(live.symbol) ? '<button class="btn small-btn" id="mtfBtn2">حساب الفريمات (يستهلك ' + (frames.length - 1) + ' طلبات)</button>' : ''}`;
+  const b2 = $('#mtfBtn2'); if (b2) b2.onclick = () => loadMTF(true);
 }
 
 function renderChart() {
@@ -268,14 +400,24 @@ const markets = { loaded: false };
 function initMarkets() {
   $('#refreshMarkets').onclick = loadMarkets;
   $('#aiNewsBtn').onclick = runAINews;
+  // أسعار العملات الرقمية تتحدث كل 10 ثوانٍ أثناء فتح صفحة الأسواق (Binance مجاني)
+  setInterval(() => {
+    if (markets.loaded && !document.hidden && $('#tab-markets').classList.contains('active')) loadCryptoTickers(true);
+  }, 10000);
 }
 
 async function loadMarkets() {
   markets.loaded = true;
-  $('#tickers').innerHTML = '<span class="spinner"></span>';
   $('#forex').innerHTML = '<span class="spinner"></span>';
   $('#news').innerHTML = '<span class="spinner"></span>';
-  getTickers().then((rows) => {
+  loadCryptoTickers(false);
+  loadTDTickers();
+  loadForexAndNews();
+}
+
+function loadCryptoTickers(silent) {
+  if (!silent) $('#tickers').innerHTML = '<span class="spinner"></span>';
+  return getTickers().then((rows) => {
     const names = Object.fromEntries(SYMBOLS.map((s) => [s.s, s.n]));
     $('#tickers').innerHTML = rows.map((t) => `
       <div class="ticker" data-sym="${esc(t.symbol)}" title="اضغط للتحليل">
@@ -284,10 +426,10 @@ async function loadMarkets() {
         <div class="${t.change >= 0 ? 'up' : 'down'}">${t.change >= 0 ? '▲ ارتفع' : '▼ انخفض'} ${Math.abs(t.change).toFixed(2)}%</div>
       </div>`).join('') || '<p class="muted">لا توجد بيانات</p>';
     $$('.ticker').forEach((el) => (el.onclick = () => { $('#liveSymbol').value = el.dataset.sym; $$('.tab').find((t) => t.dataset.tab === 'live').click(); loadLive(); }));
-  }).catch((e) => { $('#tickers').innerHTML = `<p class="down">❌ ${esc(e.message)}</p>`; });
+  }).catch((e) => { if (!silent) $('#tickers').innerHTML = `<p class="down">❌ ${esc(e.message)}</p>`; });
+}
 
-  loadTDTickers();
-
+function loadForexAndNews() {
   getForex().then((fx) => {
     $('#forex').innerHTML = `<table><thead><tr><th>العملة</th><th>مقابل 1$</th><th>التغير</th></tr></thead><tbody>${
       fx.rows.map((r) => `<tr><td><b>${r.code}</b> ${esc(r.name)}</td><td class="num">${r.perUsd.toFixed(4)}</td><td class="${r.change > 0 ? 'up' : r.change < 0 ? 'down' : 'flat'}">${r.change > 0 ? '▲ ارتفعت' : r.change < 0 ? '▼ انخفضت' : '● ثابتة'} ${Math.abs(r.change).toFixed(2)}%</td></tr>`).join('')
@@ -501,7 +643,7 @@ function renderTDUsage() {
     const label = s.state === 'invalid' ? '<span class="down">غير صالح</span>'
       : s.state === 'daily' ? '<span class="down">انتهى رصيد اليوم</span>'
       : s.state === 'minute' ? `<span class="down">متوقف ${Math.ceil(s.waitMs / 1000)}ث</span>`
-      : `${s.used}/${s.perMinute}`;
+      : `${s.used}/${s.perMinute} · اليوم ${s.today}/${s.perDay}`;
     return `مفتاح ${s.slot} <span class="usage-bar"><i class="${pct >= 100 ? 'full' : pct >= 60 ? 'hot' : ''}" style="width:${Math.min(100, pct)}%"></i></span>${label}`;
   }).join(' &nbsp;·&nbsp; ');
 }
