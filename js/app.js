@@ -10,7 +10,8 @@ import {
   loadSlots, saveSlots, resolveSlot, activeSlots, detectProvider, testSlot, SLOT_COUNT,
   CLAUDE_MODELS, GEMINI_MODELS, listGeminiModels, saveGeminiModelList, loadGeminiModelList, analyzeChartImage, fileToBase64, aiMarketNews,
 } from './ai.js';
-import { drawChart, drawMini } from './chart.js';
+import { drawChart, drawMini, createChart } from './chart.js';
+import { backtestAsync } from './strategy.js';
 import { SmartWebSocket, NativeWebSocket, nativeSocketsAvailable } from './nativews.js';
 import { openStream, applyTick, applyKline } from './stream.js';
 import { getTiingoKey, setTiingoKey, testTiingoKey, tiingoUsage, tiingoTop, toTiingoTicker, parseQuote, probeWebSocket, subscribeMessage, TIINGO_WS } from './tiingo.js';
@@ -170,7 +171,9 @@ function listChips(title, items) {
 //  السوق المباشر
 // =====================================================================
 const live = { candles: null, res: null, timer: null, symbol: '', interval: '', busy: false, ticks: 0, nextAt: 0, lastPrice: null, mtf: {},
-  source: '', stream: null, streamState: '', dirty: false, lastPoll: 0 };
+  source: '', stream: null, streamState: '', dirty: false, lastPoll: 0,
+  chart: null, big: null, stable: null, stableRes: null, pending: null, bt: null };
+const HIGHER_TF = { '1m': '15m', '5m': '1h', '15m': '1h', '30m': '4h', '1h': '4h', '4h': '1d' };
 const MTF_FRAMES = ['15m', '1h', '4h', '1d'];
 const STREAM_LABEL = { connecting: '🟡 جاري الاتصال بالبث...', live: '🟢 بث مباشر', retry: '🟡 إعادة الاتصال بالبث...', down: '🔴 البث متوقف — تحديث دوري' };
 
@@ -182,7 +185,12 @@ function initLive() {
   sel.value = store.get('taduol.refreshEvery', '10');
   sel.onchange = () => { store.set('taduol.refreshEvery', sel.value); scheduleRefresh(); startStream(); };
   $('#liveAiBtn').onclick = runLiveAI;
-  window.addEventListener('resize', () => { if (live.candles && $('#tab-live').classList.contains('active')) renderChart(); });
+  live.chart = createChart($('#chart'));
+  $$('.chart-tools [data-zoom]').forEach((b) => (b.onclick = () => live.chart.zoom(+b.dataset.zoom)));
+  $('.chart-tools [data-reset]').onclick = () => live.chart.reset();
+  $('#chartFullBtn').onclick = openFull;
+  initFull();
+  try { const a = JSON.parse(store.get('taduol.account', '{}')); live.account = { balance: +a.balance || 0, risk: +a.risk || 1 }; } catch { live.account = { balance: 0, risk: 1 }; }
   // عداد التحديث القادم + رسم حركة البث كل ثانية (خفيف: الشارت والسعر فقط)
   setInterval(() => {
     const el = $('#nextTick');
@@ -239,9 +247,12 @@ async function loadLive() {
     live.candles = candles; live.symbol = sym; live.interval = iv; live.lastPrice = null; live.ticks = 0;
     live.source = candles.source || ''; live.sourceNote = candles.note || ''; live.lastPoll = Date.now();
     if (changed) live.mtf = {};
+    if (changed || iv !== live.btInterval) { live.stable = null; live.pending = null; }
     renderAll();
     scheduleRefresh();
     startStream();
+    live.btInterval = iv;
+    runBacktest();
     // الفريمات المتعددة: تلقائياً لـ Binance، وبالزر فقط للفوركس (لتوفير الرصيد)
     if (isBinanceSymbol(sym)) loadMTF(false); else renderMTF();
   } catch (e) {
@@ -275,7 +286,17 @@ async function tickLive() {
 
 function renderAll(isTick = false) {
   const candles = live.candles;
-  live.res = analyze(candles);
+  const htfFrame = HIGHER_TF[live.interval];
+  const htf = htfFrame ? live.mtf?.[htfFrame]?.rating?.overall ?? null : null;
+  const r = analyze(candles, { htf });
+  live.res = r;
+  // ثبات الإشارة: لا نغيّر القرار المعروض إلا إذا تكرر الاتجاه الجديد في تحليلين متتاليين
+  if (!isTick || live.stable == null) { live.stable = r.direction; live.stableRes = r; live.pending = null; }
+  else if (r.direction === live.stable) { live.stableRes = r; live.pending = null; }
+  else {
+    live.pending = live.pending?.dir === r.direction ? { dir: r.direction, n: live.pending.n + 1 } : { dir: r.direction, n: 1 };
+    if (live.pending.n >= 2) { live.stable = r.direction; live.stableRes = r; live.pending = null; }
+  }
   live.recentPatterns = detectPatterns(candles, { lookback: 30 });
   if (live.mtf) live.mtf[live.interval] = { rating: live.res.rating, at: Date.now() };
   renderChart(); renderPlan(); renderRating(); renderSignals(); renderPatterns(); renderLevels(); renderMTF();
@@ -388,27 +409,124 @@ function renderMTF() {
 }
 
 function renderChart() {
-  drawChart($('#chart'), live.candles, live.res, { visible: window.innerWidth < 600 ? 60 : 110, patterns: live.recentPatterns });
+  const res = live.stableRes || live.res;
+  live.chart?.setData(live.candles, res, live.recentPatterns, live.interval);
+  if (live.big && !$('#chartFull').hidden) { live.big.setData(live.candles, res, live.recentPatterns, live.interval); renderFullHead(); }
+}
+
+// ---------------- الشارت بشاشة كاملة ----------------
+function initFull() {
+  $('#cfTfs').innerHTML = INTERVALS.map((iv) => `<button class="chip-btn" data-tf="${iv}">${iv}</button>`).join('');
+  $$('#cfTfs [data-tf]').forEach((b) => (b.onclick = () => { $('#liveInterval').value = b.dataset.tf; loadLive(); }));
+  $('#cfClose').onclick = () => closeFull(false);
+  const tog = (id, key) => { $(id).onchange = (e) => { if (live.big) { live.big.options[key] = e.target.checked; live.big.render(); } }; };
+  tog('#cfRsi', 'rsi'); tog('#cfVol', 'volume'); tog('#cfLvl', 'levels'); tog('#cfTrade', 'trade');
+  $$('[data-cfzoom]').forEach((b) => (b.onclick = () => live.big?.zoom(+b.dataset.cfzoom)));
+  $('#cfReset').onclick = () => live.big?.reset();
+  // زر الرجوع في Android يغلق الشاشة الكاملة بدل الخروج من التطبيق
+  window.addEventListener('popstate', () => { if (!$('#chartFull').hidden) closeFull(true); });
+}
+function openFull() {
+  if (!live.candles) { $('#liveStatus').innerHTML = '<span class="muted">اضغط "تحليل" أولاً لتحميل الشارت.</span>'; return; }
+  $('#chartFull').hidden = false;
+  document.body.classList.add('no-scroll');
+  if (!live.big) live.big = createChart($('#chartBig'), { fullscreen: true, rsi: true });
+  history.pushState({ chartFull: 1 }, '');
+  renderChart();
+}
+function closeFull(fromPop) {
+  $('#chartFull').hidden = true;
+  document.body.classList.remove('no-scroll');
+  if (!fromPop && history.state?.chartFull) history.back();
+}
+function renderFullHead() {
+  if ($('#chartFull').hidden || !live.candles) return;
+  const r = live.stableRes || live.res, dir = live.stable || r.direction;
+  const price = live.candles[live.candles.length - 1].c;
+  $('#cfSymbol').textContent = `${live.symbol} · ${live.interval}`;
+  $('#cfPrice').textContent = fmt(price);
+  $('#cfPrice').className = 'price-tick ' + (live.lastDir || '');
+  $$('#cfTfs [data-tf]').forEach((b) => b.classList.toggle('active', b.dataset.tf === live.interval));
+  const L = r.rating ? RATING_LABELS[r.rating.label] : null;
+  $('#cfPlan').innerHTML = [
+    `<span class="pill ${dir}">${DIR_AR[dir]} <span class="grade ${r.grade}">${r.grade}</span></span>`,
+    `<span class="pill">${r.entryType === 'limit' ? 'معلّق' : 'دخول'} <b>${fmt(r.entry)}</b></span>`,
+    `<span class="pill down">وقف <b>${fmt(r.stopLoss)}</b></span>`,
+    ...r.targets.map((t, i) => `<span class="pill up">هدف${i + 1} <b>${fmt(t)}</b></span>`),
+    `<span class="pill">1:${r.riskReward}</span>`,
+    L ? `<span class="pill ${L.cls}">${L.ar}</span>` : '',
+    live.pending ? `<span class="pill pending-note">⏳ ${DIR_AR[live.pending.dir]} قيد التأكيد</span>` : '',
+  ].join('');
 }
 
 function renderPlan() {
-  const r = live.res;
-  const conf = r.confidence;
+  const r = live.stableRes || live.res;
+  const dir = live.stable || r.direction;
+  const sideWord = r.side === 'BUY' ? 'صعود' : 'هبوط';
+  const R = (t) => (Math.abs(t - r.entry) / r.risk).toFixed(1);
+  const icon = (ok) => (ok === true ? '<span class="ok">✓</span>' : ok === false ? '<span class="no">✗</span>' : '<span class="na">•</span>');
+  const waitNote = dir !== 'WAIT' ? '' : r.grade === 'B'
+    ? `<p class="small muted">إعداد متوسط (B) نحو ال${sideWord}: الخطة أدناه للاطلاع فقط — لم يجتز شروط الدرجة A (في الاختبار التاريخي كانت إعدادات B خاسرة في المتوسط).</p>`
+    : `<p class="small muted">لا توجد صفقة جيدة الآن. الأرقام أدناه سيناريو ${sideWord} محتمل فقط — انتظر توافق الترند مع هيكل السوق.</p>`;
+  const acct = live.account || { balance: 0, risk: 1 };
+  const isFx = !isBinanceSymbol(live.symbol);
+  const qty = acct.balance > 0 && r.risk > 0 ? (acct.balance * acct.risk / 100) / r.risk : 0;
+  const bt = live.bt;
+  const btHtml = !bt ? '' : bt.status === 'loading'
+    ? `<div class="bt-box"><span class="spinner"></span> اختبار الاستراتيجية على البيانات السابقة لهذا الرمز${bt.p ? ' — ' + Math.round(bt.p * 100) + '%' : ''}...</div>`
+    : bt.status === 'error' ? `<div class="bt-box muted">تعذر الاختبار التاريخي: ${esc(bt.msg)}</div>`
+    : `<div class="bt-box"><b>📊 أداء هذه الاستراتيجية تاريخياً على ${esc(live.symbol)} · ${esc(live.interval)}</b> (آخر ${bt.bars} شمعة):<br>
+        ${bt.trades ? `${bt.trades} صفقة · نجاح <b class="${bt.winRate >= 50 ? 'up' : 'down'}">${bt.winRate}%</b> · متوسط العائد <b class="${bt.avgR > 0 ? 'up' : 'down'}">${bt.avgR > 0 ? '+' : ''}${bt.avgR}R</b> للصفقة`
+          : 'لم تظهر إشارات A في هذه الفترة.'}
+        ${bt.trades && bt.trades < 10 ? '<br><span class="muted">⚠️ عدد الصفقات قليل — النتيجة غير موثوقة إحصائياً.</span>' : ''}
+        ${bt.trades >= 10 && bt.avgR <= 0 ? '<br><span class="down">⚠️ الاستراتيجية لم تكن مربحة على هذا الرمز/الفريم — كن حذراً أو جرّب فريماً آخر.</span>' : ''}
+        <br><span class="muted small">النتائج السابقة لا تضمن المستقبل، ولا تشمل السبريد والعمولات.</span></div>`;
   $('#tradePlan').innerHTML = `
-    <h3>خطة التداول — ${esc(live.symbol)}</h3>
-    <div class="decision ${r.direction}">
-      <div><div class="word">${DIR_AR[r.direction]}</div><div class="small">الميل: ${r.bias} · الترند: ${r.trendStrength}</div></div>
-      <div class="meter"><div class="small">الثقة ${conf}%</div><div class="bar"><div class="fill" style="width:${conf}%"></div></div></div>
+    <h3>خطة التداول — ${esc(live.symbol)} <span class="grade ${r.grade}" title="درجة الصفقة">${r.grade}</span></h3>
+    <div class="decision ${dir}">
+      <div><div class="word">${DIR_AR[dir]}</div><div class="small">الميل: ${r.bias} · الترند: ${r.trendStrength}</div></div>
+      <div class="meter"><div class="small">التوافق ${Math.round(r.confluence * 100)}% · الثقة ${r.confidence}%</div><div class="bar"><div class="fill" style="width:${r.confidence}%"></div></div></div>
     </div>
-    <p class="small">هل سيصعد السوق؟ <b>${r.direction === 'BUY' ? 'نعم — الأرجح صعود' : r.direction === 'SELL' ? 'لا — الأرجح هبوط' : 'غير واضح — الأفضل الانتظار'}</b></p>
+    ${live.pending ? `<p class="pending-note">⏳ إشارة جديدة (${DIR_AR[live.pending.dir]}) قيد التأكيد — تحتاج تحليلاً آخر متطابقاً</p>` : ''}
+    ${waitNote}
     <div class="levels">
-      <div class="level"><span>الدخول</span><b>${fmt(r.entry)}</b></div>
-      <div class="level sl"><span>وقف الخسارة</span><b>${fmt(r.stopLoss)}</b></div>
-      ${r.targets.map((t, i) => `<div class="level tp"><span>الهدف ${i + 1}</span><b>${fmt(t)}</b></div>`).join('')}
+      <div class="level"><span>${r.entryType === 'limit' ? 'دخول بأمر معلّق (Limit)' : 'دخول فوري'}</span><b>${fmt(r.entry)}</b><span>منطقة: ${fmt(r.entryZone[0])} – ${fmt(r.entryZone[1])}</span></div>
+      <div class="level sl"><span>وقف الخسارة (خلف ${r.side === 'BUY' ? 'آخر قاع' : 'آخر قمة'})</span><b>${fmt(r.stopLoss)}</b><span>المخاطرة: ${fmt(r.risk)}</span></div>
+      ${r.targets.map((t, i) => `<div class="level tp"><span>الهدف ${i + 1} (${R(t)}R)</span><b>${fmt(t)}</b></div>`).join('')}
       <div class="level"><span>العائد/المخاطرة (هدف1)</span><b>1 : ${r.riskReward}</b></div>
     </div>
-    ${r.direction === 'WAIT' ? '<p class="small muted">المستويات أعلاه للسيناريو الصاعد كمرجع فقط. الإشارات متضاربة — انتظر تأكيداً.</p>' : ''}
-    <p class="small muted">ATR: ${fmt(r.atr)} · النتيجة الموزونة: ${r.score}</p>`;
+    <p class="small">💡 ${r.entryType === 'limit' ? 'السعر ممتد — لا تطارده. ضع أمراً معلقاً عند سعر الدخول، وألغِه إذا لم يُنفّذ خلال 5 شموع.' : 'خذ جزءاً من الربح عند الهدف الأول، وانقل الوقف لنقطة الدخول.'}</p>
+    <h4>لماذا؟ (عوامل التوافق)</h4>
+    <ul class="factors">${(r.factors || []).map((f) => `<li>${icon(f.ok)} ${esc(f.text)}</li>`).join('')}</ul>
+    <details class="small"><summary>حجم الصفقة حسب رأس المال</summary>
+      <div class="form-row" style="margin-top:.4rem">
+        <label>رأس المال ($)<input id="acctBal" type="number" min="0" inputmode="decimal" value="${acct.balance || ''}" placeholder="مثال: 1000" /></label>
+        <label>المخاطرة لكل صفقة<select id="acctRisk">${[0.5, 1, 2].map((v) => `<option value="${v}" ${v === acct.risk ? 'selected' : ''}>${v}%</option>`).join('')}</select></label>
+      </div>
+      ${qty ? `<p>الخسارة القصوى: <b>$${(acct.balance * acct.risk / 100).toFixed(2)}</b> · الكمية: <b>${qty < 1 ? qty.toPrecision(3) : qty.toFixed(2)}</b> ${isFx ? `وحدة (≈ ${(qty / 100000).toFixed(2)} لوت)` : esc(live.symbol.replace(/USDT$|USDC$/, ''))}</p>` : '<p class="muted">أدخل رأس المال لحساب الكمية المناسبة.</p>'}
+    </details>
+    ${btHtml}
+    <p class="small muted">ATR: ${fmt(r.atr)} · النتيجة الموزونة: ${r.score}${r.divergence ? ' · ' + esc(r.divergence.text) : ''}</p>`;
+  const saveAcct = () => { live.account = { balance: +$('#acctBal').value || 0, risk: +$('#acctRisk').value || 1 }; store.set('taduol.account', JSON.stringify(live.account)); renderPlan(); };
+  $('#acctBal').onchange = saveAcct; $('#acctRisk').onchange = saveAcct;
+  renderFullHead();
+}
+
+/** اختبار تاريخي للاستراتيجية على نفس الرمز والفريم (بالخلفية، على دفعات) */
+async function runBacktest() {
+  const sym = live.symbol, iv = live.interval;
+  live.bt = { status: 'loading' }; renderPlan();
+  try {
+    let c = live.candles;
+    try { const more = await getCandles(sym, iv, 1000, { ttl: 600000 }); if (more.length > c.length) c = more; } catch { /* نكتفي بالشموع الحالية */ }
+    let lastP = 0;
+    const bt = await backtestAsync(c, (sl) => analyze(sl), { start: Math.min(300, Math.floor(c.length / 2)), step: 2, minGrade: 'A' }, (p) => {
+      if (p - lastP > 0.1 && sym === live.symbol) { lastP = p; live.bt = { status: 'loading', p }; renderPlan(); }
+    });
+    if (sym === live.symbol && iv === live.interval) { live.bt = { status: 'done', ...bt, bars: c.length }; renderPlan(); }
+  } catch (e) {
+    if (sym === live.symbol) { live.bt = { status: 'error', msg: e.message }; renderPlan(); }
+  }
 }
 
 function renderSignals() {

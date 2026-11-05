@@ -5,6 +5,7 @@
 import { detectPatterns } from './patterns.js';
 import { computeAll, last, prevOf, supportResistance, fibonacci, pivots, swings } from './indicators.js';
 import { technicalRating } from './rating.js';
+import { buildPlan } from './strategy.js';
 
 /**
  * تحليل فني كامل لسلسلة شموع
@@ -14,7 +15,14 @@ import { technicalRating } from './rating.js';
  *   signals:Array<{name,value,vote,note}>, patterns:Array, levels:Array, fib:Object, pivots:Object, ind:Object
  * }}
  */
-export function analyze(candles) {
+/**
+ * @param {Array} candles
+ * @param {{closedOnly?:boolean, htf?:number|null}} opts
+ *   closedOnly: أنماط الشموع تُقرأ من الشموع المكتملة فقط (الشمعة الأخيرة قيد التكوّن قد تنقلب)
+ *   htf: تقييم الفريم الأكبر (-1..1) لاستخدامه كفلتر
+ */
+export function analyze(candles, opts = {}) {
+  const closedOnly = opts.closedOnly !== false;
   if (!candles || candles.length < 60) throw new Error('نحتاج 60 شمعة على الأقل للتحليل');
   const ind = computeAll(candles);
   const k = candles[candles.length - 1];
@@ -114,8 +122,9 @@ export function analyze(candles) {
   }
 
   // ---- الشموع اليابانية (آخر 5 شموع) ----
-  const patterns = detectPatterns(candles, { lookback: 5 });
-  const lastIdx = candles.length - 1;
+  const patternSrc = closedOnly && candles.length > 61 ? candles.slice(0, -1) : candles;
+  const patterns = detectPatterns(patternSrc, { lookback: 5 });
+  const lastIdx = patternSrc.length - 1;
   for (const p of patterns) {
     const recency = 1 - (lastIdx - p.index) * 0.18; // الأحدث أهم
     const v = p.type === 'bullish' ? 1 : p.type === 'bearish' ? -1 : 0;
@@ -128,42 +137,19 @@ export function analyze(candles) {
   // دمج محرك الشموع/المؤشرات الموزون مع التقييم الفني الشامل (26 مؤشراً)
   const rating = technicalRating(candles, ind);
   const score = 0.6 * engineScore + 0.4 * rating.overall;
-  const confidence = Math.round(Math.min(95, Math.abs(score) * 100 * (a && a > 25 ? 1.15 : 0.95)));
-  let direction = 'WAIT';
-  if (score > 0.18) direction = 'BUY';
-  else if (score < -0.18) direction = 'SELL';
   const bias = score > 0.08 ? 'صاعد' : score < -0.08 ? 'هابط' : 'عرضي';
 
-  // ---- الدخول / الوقف / الأهداف ----
+  // ---- خطة الصفقة (الدخول / الوقف / الأهداف / الدرجة) ----
   const atrV = last(ind.atr) || price * 0.01;
   const levels = supportResistance(candles);
-  const sw = swings(candles.slice(-60), 2, 2);
-  const recentLow = Math.min(...candles.slice(-10).map((x) => x.l));
-  const recentHigh = Math.max(...candles.slice(-10).map((x) => x.h));
-  let entry = price, stopLoss, targets;
-  if (direction === 'SELL') {
-    stopLoss = Math.max(recentHigh + atrV * 0.2, price + atrV * 1.5);
-    if (stopLoss - price > atrV * 3) stopLoss = price + atrV * 3;
-    const risk = stopLoss - entry;
-    const supports = levels.map((l) => l.price).filter((p) => p < entry - risk * 0.8).sort((x, y) => y - x);
-    targets = [entry - risk * 1.5, entry - risk * 2.5, entry - risk * 4];
-    if (supports[0] && supports[0] < targets[0]) targets[1] = Math.min(targets[1], supports[0]);
-  } else {
-    stopLoss = Math.min(recentLow - atrV * 0.2, price - atrV * 1.5);
-    if (price - stopLoss > atrV * 3) stopLoss = price - atrV * 3;
-    const risk = entry - stopLoss;
-    const res = levels.map((l) => l.price).filter((p) => p > entry + risk * 0.8).sort((x, y) => x - y);
-    targets = [entry + risk * 1.5, entry + risk * 2.5, entry + risk * 4];
-    if (res[0] && res[0] > targets[0]) targets[1] = Math.max(targets[1], res[0]);
-  }
-  targets.sort((x, y) => (direction === 'SELL' ? y - x : x - y));
-  const riskReward = Math.abs(targets[0] - entry) / Math.abs(entry - stopLoss);
+  const plan = buildPlan(candles, { ind, score, rating, patterns, levels, atr: atrV, htf: opts.htf ?? null });
 
   return {
-    direction, bias, confidence, score: +score.toFixed(3), trendStrength,
-    price, entry, stopLoss, targets, riskReward: +riskReward.toFixed(2), atr: atrV,
-    signals, rating, patterns, levels, fib: fibonacci(candles), pivots: pivots(candles[candles.length - 2] || k),
-    swings: sw, ind,
+    direction: plan.direction, side: plan.side, grade: plan.grade, bias, confidence: plan.confidence, score: +score.toFixed(3), trendStrength,
+    price, entry: plan.entry, entryType: plan.entryType, entryZone: plan.entryZone, stopLoss: plan.stopLoss, targets: plan.targets,
+    riskReward: plan.riskReward, risk: plan.risk, factors: plan.factors, confluence: plan.confluence, structure: plan.structure, divergence: plan.divergence,
+    atr: atrV, signals, rating, patterns, levels, fib: fibonacci(candles), pivots: pivots(candles[candles.length - 2] || k),
+    swings: swings(candles.slice(-60), 2, 2), ind,
   };
 }
 
@@ -171,7 +157,9 @@ export function analyze(candles) {
 export function summaryForAI(res, symbol, interval) {
   const lines = [
     `الرمز: ${symbol} | الفريم: ${interval} | السعر الحالي: ${fmt(res.price)}`,
-    `نتيجة المحرك الفني: ${res.direction} | الميل: ${res.bias} | الثقة: ${res.confidence}% | قوة الترند: ${res.trendStrength}`,
+    `نتيجة المحرك الفني: ${res.direction} (الاتجاه المقترح ${res.side}، درجة ${res.grade}) | الميل: ${res.bias} | الثقة: ${res.confidence}% | قوة الترند: ${res.trendStrength}`,
+    `خطة المحرك: دخول ${fmt(res.entry)} (${res.entryType === 'limit' ? 'أمر معلّق' : 'فوري'}) | وقف ${fmt(res.stopLoss)} | أهداف ${res.targets.map(fmt).join(' / ')} | عائد/مخاطرة ${res.riskReward}`,
+    'عوامل التوافق: ' + (res.factors || []).map((x) => `${x.ok === true ? '✓' : x.ok === false ? '✗' : '•'} ${x.text}`).join(' | '),
     `ATR: ${fmt(res.atr)}`,
     ...(res.rating ? [`التقييم الفني الشامل (26 مؤشراً): ${res.rating.label} (${res.rating.overall}) — المتوسطات: ${res.rating.ma.label} [شراء ${res.rating.ma.buy}/بيع ${res.rating.ma.sell}] — المذبذبات: ${res.rating.osc.label} [شراء ${res.rating.osc.buy}/بيع ${res.rating.osc.sell}]`] : []),
     'المؤشرات:',

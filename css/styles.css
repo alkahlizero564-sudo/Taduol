@@ -142,8 +142,43 @@ td.num { direction: ltr; text-align: left; font-variant-numeric: tabular-nums; }
 .up { color: var(--up); } .down { color: var(--down); } .flat { color: var(--muted); }
 
 .chart-card { padding: .5rem; }
-#chart { width: 100%; height: 460px; display: block; border-radius: 10px; }
-@media (max-width: 600px) { #chart { height: 320px; } }
+#chart { width: 100%; height: 520px; display: block; border-radius: 10px; }
+@media (max-width: 600px) { #chart { height: 62vh; min-height: 360px; } }
+.chart-card { position: relative; }
+.chart-tools { display: flex; gap: .35rem; flex-wrap: wrap; margin-bottom: .4rem; }
+.chip-btn { font: inherit; font-size: .85rem; border: 1px solid var(--border); background: var(--bg); color: var(--text); border-radius: 999px; padding: .2rem .7rem; cursor: pointer; }
+.chip-btn:hover, .chip-btn.active { border-color: var(--accent); color: var(--accent); }
+.chart-hint { margin: .3rem 0 0; text-align: center; }
+
+/* ---- الشارت بشاشة كاملة ---- */
+.chart-full { position: fixed; inset: 0; z-index: 100; background: var(--chart-bg); display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top, 0) env(safe-area-inset-right, 0) env(safe-area-inset-bottom, 0) env(safe-area-inset-left, 0); }
+.chart-full[hidden] { display: none; }
+.cf-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; padding: .4rem .6rem; border-bottom: 1px solid var(--border); background: var(--card); }
+.cf-title { font-size: 1rem; white-space: nowrap; }
+.cf-tfs { display: flex; gap: .25rem; overflow-x: auto; scrollbar-width: none; }
+.cf-tfs::-webkit-scrollbar { display: none; }
+.cf-toggles { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-inline-start: auto; font-size: .85rem; }
+.cf-toggles label { margin: 0; flex: 0 0 auto; }
+#chartBig { flex: 1; width: 100%; min-height: 0; display: block; }
+.cf-plan { display: flex; gap: .4rem; overflow-x: auto; padding: .4rem .6rem; border-top: 1px solid var(--border); background: var(--card); font-size: .85rem; white-space: nowrap; scrollbar-width: none; }
+.cf-plan::-webkit-scrollbar { display: none; }
+.cf-plan .pill { border-radius: 8px; padding: .2rem .55rem; background: var(--bg); border: 1px solid var(--border); }
+.cf-plan .pill b { direction: ltr; display: inline-block; }
+.cf-plan .pill.BUY { border-color: var(--up); color: var(--up); } .cf-plan .pill.SELL { border-color: var(--down); color: var(--down); } .cf-plan .pill.WAIT { border-color: var(--warn); color: var(--warn); }
+@media (max-width: 600px) { .cf-toggles label { font-size: .8rem; } .cf-title { font-size: .9rem; } }
+body.no-scroll { overflow: hidden; }
+
+/* ---- خطة الصفقة: الدرجة والعوامل والاختبار ---- */
+.grade { display: inline-block; font-weight: 800; border-radius: 8px; padding: .05rem .5rem; margin-inline-start: .3rem; font-size: .9rem; }
+.grade.A { background: color-mix(in srgb, var(--up) 18%, transparent); color: var(--up); }
+.grade.B { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.grade.C { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }
+.factors { list-style: none; padding: 0; margin: .3rem 0 .6rem; font-size: .88rem; }
+.factors li { padding: .15rem 0; }
+.factors .ok { color: var(--up); } .factors .no { color: var(--down); } .factors .na { color: var(--muted); }
+.bt-box { background: var(--bg); border-radius: 10px; padding: .6rem .8rem; font-size: .88rem; margin-top: .5rem; }
+.pending-note { color: var(--warn); font-size: .85rem; }
 
 .tickers { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: .6rem; }
 .ticker { background: var(--bg); border-radius: 12px; padding: .7rem; cursor: pointer; border: 1px solid transparent; }
@@ -220,3 +255,8 @@ td.num { direction: ltr; text-align: left; font-variant-numeric: tabular-nums; }
 .diag-slot .detail { font-size: .8rem; color: var(--muted); direction: ltr; text-align: right; word-break: break-all; }
 .tiingo-slot { border-color: var(--accent); margin-bottom: .8rem; }
 .ticker .since { font-size: .75rem; }
+@media (max-width: 700px) {
+  .cf-toggles { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; width: 100%; margin: 0; }
+  .cf-toggles::-webkit-scrollbar { display: none; }
+  .cf-head { gap: .35rem; padding: .3rem .5rem; }
+}

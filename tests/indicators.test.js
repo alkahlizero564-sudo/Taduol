@@ -36,7 +36,8 @@ test('macd positive in uptrend; atr positive; bollinger ordered', () => {
 test('analyze gives BUY in a strong uptrend with SL below and TPs above entry', () => {
   const up = series(220, (i) => 100 + i * 0.5 + Math.sin(i / 3));
   const r = analyze(up);
-  assert.equal(r.direction, 'BUY');
+  assert.equal(r.side, 'BUY');
+  assert.ok(['BUY', 'WAIT'].includes(r.direction));
   assert.ok(r.stopLoss < r.entry);
   assert.ok(r.targets.every((t) => t > r.entry));
   assert.ok(r.riskReward >= 1.4);
@@ -45,7 +46,8 @@ test('analyze gives BUY in a strong uptrend with SL below and TPs above entry', 
 test('analyze gives SELL in a strong downtrend', () => {
   const dn = series(220, (i) => 300 - i * 0.5 + Math.sin(i / 3));
   const r = analyze(dn);
-  assert.equal(r.direction, 'SELL');
+  assert.equal(r.side, 'SELL');
+  assert.ok(['SELL', 'WAIT'].includes(r.direction));
   assert.ok(r.stopLoss > r.entry);
   assert.ok(r.targets.every((t) => t < r.entry));
 });
