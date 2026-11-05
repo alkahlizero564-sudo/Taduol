@@ -12,7 +12,7 @@ import {
 } from './ai.js';
 import { drawChart, drawMini } from './chart.js';
 import { openStream, applyTick, applyKline } from './stream.js';
-import { getTiingoKey, setTiingoKey, testTiingoKey, tiingoUsage, tiingoTop, toTiingoTicker, parseQuote } from './tiingo.js';
+import { getTiingoKey, setTiingoKey, testTiingoKey, tiingoUsage, tiingoTop, toTiingoTicker, parseQuote, probeWebSocket, subscribeMessage, TIINGO_WS } from './tiingo.js';
 import { exampleSeries } from './examples.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -700,6 +700,12 @@ function initKeys() {
     };
   });
 
+  $('#diagBtn').onclick = runDiagnostics;
+  $('#diagCopy').onclick = () => {
+    const txt = diagText();
+    (navigator.clipboard?.writeText(txt) || Promise.reject()).then(() => { $('#diagCopy').textContent = '✓ تم النسخ'; }).catch(() => prompt('انسخ النتيجة:', txt));
+  };
+
   // ---- Tiingo ----
   $('#tiingoKey').value = getTiingoKey();
   $('#tiingoShow').onclick = () => { const k = $('#tiingoKey'); k.type = k.type === 'password' ? 'text' : 'password'; };
@@ -765,6 +771,61 @@ function renderTDUsage() {
   }).join(' &nbsp;·&nbsp; ');
 }
 setInterval(renderTDUsage, 2000);
+
+// =====================================================================
+//  تشخيص الاتصال — يختبر كل مصدر على حدة
+// =====================================================================
+let diagResults = [];
+function diagText() {
+  return `تشخيص تداول — ${new Date().toISOString()}\n${navigator.userAgent}\nتطبيق Android: ${globalThis.Capacitor?.isNativePlatform?.() ? 'نعم' : 'لا'}\n` +
+    diagResults.map((r) => `${r.ok ? '✅' : r.ok === null ? '⏭' : '❌'} ${r.name}: ${r.detail}`).join('\n');
+}
+async function runDiagnostics() {
+  const out = $('#diagOut'), btn = $('#diagBtn');
+  btn.disabled = true; diagResults = [];
+  const tiKey = $('#tiingoKey').value.trim() || getTiingoKey();
+  const tdKey = ($$('.td-input').map((x) => x.value.trim()).find(Boolean)) || getTwelveKeys()[0];
+  const render = (running) => {
+    out.innerHTML = `<div class="table-wrap"><table><tbody>${diagResults.map((r) => `<tr><td>${r.ok ? '✅' : r.ok === null ? '⏭' : '❌'}</td><td><b>${esc(r.name)}</b><div class="detail">${esc(r.detail)}</div></td></tr>`).join('')}${running ? `<tr><td><span class="spinner"></span></td><td>${esc(running)}...</td></tr>` : ''}</tbody></table></div>`;
+  };
+  const step = async (name, fn) => {
+    render(name);
+    try { const d = await fn(); diagResults.push({ name, ok: d.ok !== false && d.skip !== true ? true : d.skip ? null : false, detail: d.detail }); }
+    catch (e) { diagResults.push({ name, ok: false, detail: e?.message || String(e) }); }
+    render();
+  };
+  const ws = (r) => ({ ok: r.ok, detail: `${r.detail} · ${r.ms}ms${r.first ? ' · ' + r.first : ''}` });
+
+  await step('الإنترنت (موقع عام)', async () => { const r = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR'); return { ok: r.ok, detail: 'HTTP ' + r.status }; });
+  await step('Binance — الأسعار', async () => { const c = await getCandles('BTCUSDT', '1h', 2); return { detail: 'BTC = ' + fmt(c[c.length - 1].c) }; });
+  await step('Binance — البث المباشر', async () => {
+    const a = await probeWebSocket('wss://data-stream.binance.vision/ws/btcusdt@trade', { timeoutMs: 8000 });
+    if (a.ok) return ws(a);
+    const b = await probeWebSocket('wss://stream.binance.com:9443/ws/btcusdt@trade', { timeoutMs: 8000 });
+    return { ok: b.ok, detail: `vision: ${a.detail} | binance.com: ${b.detail}` };
+  });
+  if (tiKey) {
+    await step('Tiingo — البث المباشر', async () => ws(await probeWebSocket(TIINGO_WS, { send: subscribeMessage(tiKey, ['eurusd']), timeoutMs: 12000 })));
+    await step('Tiingo — الشموع (طلب واحد)', async () => {
+      const q = await tiingoTop(['EUR/USD'], { key: tiKey, cacheMs: 0 });
+      return { detail: q.length ? `EUR/USD = ${q[0].mid}` : 'رد فارغ' };
+    });
+  } else diagResults.push({ name: 'Tiingo', ok: null, detail: 'لا يوجد مفتاح' });
+  if (tdKey) await step('Twelve Data (طلب واحد)', async () => ({ detail: await testTwelveKey(tdKey) }));
+  else diagResults.push({ name: 'Twelve Data', ok: null, detail: 'لا يوجد مفتاح' });
+  render();
+  // خلاصة مفهومة
+  const fail = (n) => diagResults.find((r) => r.name.startsWith(n) && r.ok === false);
+  let hint = '';
+  if (fail('الإنترنت')) hint = 'لا يوجد اتصال بالإنترنت أو أن الشبكة تحجب المواقع الخارجية.';
+  else if (fail('Tiingo — البث') && fail('Tiingo — الشموع')) hint = 'Tiingo لا يعمل من شبكتك (غالباً حجب حسب الدولة أو المفتاح غير صالح). استخدم Twelve Data للفوركس، أو جرّب VPN.';
+  else if (fail('Tiingo — البث')) hint = 'مفتاح Tiingo يعمل للشموع لكن البث المباشر محجوب من شبكتك — التطبيق سيحدّث الفوركس بالطلبات العادية.';
+  else if (fail('Binance — البث')) hint = 'بث Binance محجوب من شبكتك — التطبيق سيحدّث العملات الرقمية بالطلبات العادية كل 10 ثوانٍ.';
+  else hint = 'كل المصادر المتاحة تعمل ✓';
+  out.insertAdjacentHTML('beforeend', `<p class="small"><b>الخلاصة:</b> ${esc(hint)}</p>`);
+  $('#diagCopy').hidden = false; $('#diagCopy').textContent = '📋 نسخ النتيجة';
+  btn.disabled = false;
+}
 
 function readSlot(el) {
   const model = $('.s-model', el).value;

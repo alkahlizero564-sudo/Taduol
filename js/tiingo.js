@@ -83,7 +83,10 @@ async function httpGet(url, key) {
   try { r = await fetch(url, { headers }); } catch {
     throw new TiingoError('المتصفح يمنع طلبات Tiingo (CORS) — الشموع التاريخية من Tiingo تعمل داخل تطبيق Android', 'cors');
   }
-  return { status: r.status, data: await r.json().catch(() => null) };
+  const text = await r.text().catch(() => '');
+  let data = text;
+  try { data = JSON.parse(text); } catch { /* صفحة HTML مثل صفحة حجب Cloudflare */ }
+  return { status: r.status, data };
 }
 
 const cache = new Map();
@@ -96,9 +99,16 @@ async function get(path, params, key = getTiingoKey(), { cacheMs = CACHE_MS } = 
   if (hit && Date.now() - hit.t < cacheMs) return hit.data;
   countRequest();
   const { status, data } = await httpGet(url, key);
+  if (status === 403 && /cloudflare|access denied|error 10(09|20)|banned|country/i.test(typeof data === 'string' ? data : '')) {
+    throw new TiingoError(`Tiingo يحجب الاتصال من شبكتك/بلدك (HTTP 403 — حجب Cloudflare)`, 'blocked');
+  }
   if (status === 401 || status === 403) throw new TiingoError('مفتاح Tiingo غير صالح', 'invalid');
   if (status === 429) throw new TiingoError('تجاوزت حد Tiingo — انتظر قليلاً', 'limit');
-  if (status >= 400 || !data) throw new TiingoError('Tiingo: ' + (data?.detail || `HTTP ${status}`), status === 404 ? 'symbol' : 'other');
+  if (status >= 400 || !data) {
+    const body = typeof data === 'string' ? data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90) : '';
+    const blocked = status === 403 && /cloudflare|access denied|1020|1009|banned|country/i.test(String(data));
+    throw new TiingoError(blocked ? `Tiingo يحجب الاتصال من شبكتك/بلدك (HTTP ${status})` : 'Tiingo: ' + (data?.detail || `HTTP ${status}${body ? ' — ' + body : ''}`), status === 404 ? 'symbol' : blocked ? 'blocked' : 'other');
+  }
   if (!Array.isArray(data) && data.detail) throw new TiingoError('Tiingo: ' + data.detail, 'other');
   cache.set(url, { t: Date.now(), data });
   return data;
@@ -173,15 +183,39 @@ export function parseQuote(msg, refPrice = () => undefined) {
 }
 
 /** اختبار المفتاح عبر البث (يعمل في المتصفح والتطبيق) */
+/**
+ * فحص اتصال WebSocket عام: هل فُتح؟ هل وصلت رسالة؟ وما كود الإغلاق؟
+ * @returns {Promise<{ok:boolean, opened:boolean, ms:number, code?:number, first?:string, detail:string}>}
+ */
+export function probeWebSocket(url, { send, timeoutMs = 10000, WS = globalThis.WebSocket } = {}) {
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    let opened = false, done = false, ws;
+    const end = (ok, extra) => {
+      if (done) return; done = true; clearTimeout(timer);
+      try { ws?.close(); } catch { /* ignore */ }
+      resolve({ ok, opened, ms: Date.now() - t0, ...extra });
+    };
+    const timer = setTimeout(() => end(false, { detail: opened ? 'اتصل لكن لم تصل أي بيانات خلال ' + timeoutMs / 1000 + ' ثوانٍ' : 'لم يكتمل الاتصال (انتهت المهلة)' }), timeoutMs);
+    try { ws = new WS(url); } catch (e) { return end(false, { detail: 'تعذر إنشاء الاتصال: ' + (e?.message || e) }); }
+    ws.onopen = () => { opened = true; if (send) ws.send(JSON.stringify(send)); };
+    ws.onmessage = (ev) => end(true, { first: String(ev.data).slice(0, 160), detail: 'وصلت بيانات' });
+    ws.onclose = (ev) => end(false, { code: ev?.code, detail: opened ? `فُتح الاتصال ثم أُغلق (كود ${ev?.code})` : `رُفض الاتصال قبل أن يُفتح (كود ${ev?.code ?? '؟'}) — غالباً حجب من الشبكة أو الدولة` });
+  });
+}
+
 export function testTiingoKey(key, WS = globalThis.WebSocket, timeoutMs = 12000) {
   return new Promise((resolve, reject) => {
     if (!key) return reject(new Error('اكتب مفتاح Tiingo أولاً'));
-    let done = false;
+    let done = false, opened = false;
     const ws = new WS(TIINGO_WS);
     const finish = (fn, v) => { if (done) return; done = true; clearTimeout(timer); try { ws.close(); } catch { /* ignore */ } fn(v); };
-    const timer = setTimeout(() => finish(reject, new Error('لم يرد Tiingo — تحقق من الاتصال')), timeoutMs);
-    ws.onopen = () => ws.send(JSON.stringify(subscribeMessage(key, ['eurusd'])));
-    ws.onerror = () => finish(reject, new Error('تعذر الاتصال ببث Tiingo'));
+    const timer = setTimeout(() => finish(reject, new Error(opened ? 'اتصل ببث Tiingo لكن لم يرد على الاشتراك' : 'لم يكتمل الاتصال ببث Tiingo (انتهت المهلة)')), timeoutMs);
+    ws.onopen = () => { opened = true; ws.send(JSON.stringify(subscribeMessage(key, ['eurusd']))); };
+    ws.onerror = () => { /* التفاصيل في onclose */ };
+    ws.onclose = (ev) => finish(reject, new Error(opened
+      ? `بث Tiingo أغلق الاتصال بعد الاشتراك (كود ${ev?.code ?? '؟'}) — قد يكون المفتاح غير صالح`
+      : `تعذر الاتصال ببث Tiingo (كود ${ev?.code ?? '؟'}) — جرّب "🩺 تشخيص الاتصال"`));
     ws.onmessage = (ev) => {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       const code = m?.response?.code;

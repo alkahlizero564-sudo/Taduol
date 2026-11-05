@@ -197,6 +197,12 @@
           <button id="clearKeys" class="btn danger">🗑️ مسح الكل</button>
           <span id="keysMsg" class="muted"></span>
         </div>
+        <div class="slot diag-slot">
+          <div class="key-row"><button id="diagBtn" class="btn" type="button">🩺 تشخيص الاتصال</button>
+            <button id="diagCopy" class="btn" type="button" hidden>📋 نسخ النتيجة</button></div>
+          <p class="muted small">يختبر كل مصدر بيانات على حدة ويوضح أين المشكلة بالضبط (يستهلك طلباً واحداً من Tiingo وواحداً من Twelve Data).</p>
+          <div id="diagOut"></div>
+        </div>
         <div class="slot td-slot tiingo-slot">
           <h4>⚡ Tiingo — بث مباشر للفوركس والذهب (الأفضل)</h4>
           <p class="muted small">الأسعار تصل لحظياً عبر البث المباشر <b>بدون استهلاك طلبات</b>، لكل أزواج العملات والذهب والفضة (EUR/USD، XAU/USD...).

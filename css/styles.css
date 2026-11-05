@@ -215,5 +215,8 @@ td.num { direction: ltr; text-align: left; font-variant-numeric: tabular-nums; }
 .price-tick.up { color: var(--up); } .price-tick.down { color: var(--down); }
 #nextTick { align-self: center; }
 
+.diag-slot { margin: 0 0 .8rem; }
+.diag-slot table td { vertical-align: top; }
+.diag-slot .detail { font-size: .8rem; color: var(--muted); direction: ltr; text-align: right; word-break: break-all; }
 .tiingo-slot { border-color: var(--accent); margin-bottom: .8rem; }
 .ticker .since { font-size: .75rem; }

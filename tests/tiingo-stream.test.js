@@ -171,3 +171,9 @@ test('inside the Android app, Tiingo requests go through Capacitor native HTTP (
     assert.match(calls[0].o.url, /\/tiingo\/fx\/usdchf\/prices\?resampleFreq=30min/);
   } finally { delete globalThis.Capacitor; }
 });
+
+test('Tiingo country block (Cloudflare 403 page) is reported as a block, not an invalid key', async () => {
+  T.setTiingoKey('k');
+  T._setHttp(async () => ({ status: 403, data: '<title>Access denied | api.tiingo.com used Cloudflare to restrict access</title> Error 1009 banned the country' }));
+  await assert.rejects(() => T.tiingoCandles('EUR/JPY', '1h', 1), (e) => e.kind === 'blocked' && /يحجب/.test(e.message));
+});
