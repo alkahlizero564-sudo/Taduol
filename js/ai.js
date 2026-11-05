@@ -20,6 +20,74 @@ export const GEMINI_MODELS = [
   { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite (الأرخص)' },
 ];
 
+// ---------------- جلب كل نماذج Gemini المتاحة للمفتاح ----------------
+const GEMINI_LIST_STORE = 'taduol.geminiModels.v1';
+
+/** النماذج التي لا تصلح لتحليل الشارت (تضمين، صوت، توليد صور...) */
+const GEMINI_SKIP = /embedding|aqa|tts|native-audio|image-generation|imagen|veo|-live-|learnlm/i;
+
+/** ترتيب: الأحدث أولاً، ثم pro > flash > flash-lite، والإصدارات المستقرة قبل التجريبية */
+function geminiRank(id) {
+  const ver = parseFloat((id.match(/gemini-(\d+(?:\.\d+)?)/) || [])[1] || 0);
+  const tier = /pro/.test(id) ? 0 : /flash-lite/.test(id) ? 2 : /flash/.test(id) ? 1 : 3;
+  const unstable = /preview|exp|latest/.test(id) ? 1 : 0;
+  return [-ver, /^gemini/.test(id) ? 0 : 1, tier, unstable, id];
+}
+function cmpRank(a, b) {
+  const x = geminiRank(a.id), y = geminiRank(b.id);
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+  return 0;
+}
+
+/**
+ * يجلب كل نماذج Gemini التي يستطيع المفتاح استخدامها لتوليد المحتوى
+ * @returns {Promise<Array<{id,label,description,input,output,thinking}>>}
+ */
+export async function listGeminiModels(key, fetchFn = globalThis.fetch) {
+  const k = String(key || '').trim();
+  if (!k) throw new Error('اكتب مفتاح Gemini أولاً');
+  const all = [];
+  let pageToken = '';
+  for (let page = 0; page < 10; page++) {
+    const qs = new URLSearchParams({ pageSize: '1000' });
+    if (pageToken) qs.set('pageToken', pageToken);
+    const r = await fetchFn(`https://generativelanguage.googleapis.com/v1beta/models?${qs}`, { headers: { 'x-goog-api-key': k } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const msg = j?.error?.message || `HTTP ${r.status}`;
+      if (r.status === 400 || r.status === 401 || r.status === 403) throw new Error('مفتاح Gemini غير صالح أو لا يملك صلاحية: ' + msg);
+      throw new Error('تعذر جلب النماذج: ' + msg);
+    }
+    all.push(...(j.models || []));
+    pageToken = j.nextPageToken;
+    if (!pageToken) break;
+  }
+  const seen = new Set();
+  return all
+    .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+    .map((m) => ({
+      id: String(m.name || '').replace(/^models\//, ''),
+      label: m.displayName || m.name,
+      description: m.description || '',
+      input: m.inputTokenLimit || 0,
+      output: m.outputTokenLimit || 0,
+      thinking: !!m.thinking,
+    }))
+    .filter((m) => m.id && !GEMINI_SKIP.test(m.id) && !seen.has(m.id) && seen.add(m.id))
+    .sort(cmpRank);
+}
+
+export function saveGeminiModelList(models) {
+  try { localStorage.setItem(GEMINI_LIST_STORE, JSON.stringify({ at: Date.now(), models })); } catch { /* ignore */ }
+}
+/** القائمة المحفوظة من آخر جلب (أو null) */
+export function loadGeminiModelList() {
+  try {
+    const j = JSON.parse(localStorage.getItem(GEMINI_LIST_STORE) || 'null');
+    return j && Array.isArray(j.models) && j.models.length ? j : null;
+  } catch { return null; }
+}
+
 // موديلات Claude التي تدعم الرجوع التلقائي على الخادم عند الرفض
 const CLAUDE_FALLBACK_MODELS = new Set(['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-fable-5-1', 'claude-opus-5']);
 // موديلات Claude التي تدعم نسخة البحث الأحدث

@@ -6,7 +6,7 @@ import { analyze, summaryForAI, fmt } from './analysis.js';
 import { getCandles, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, tdWatchlist, tdQuotes, getTwelveKeys, setTwelveKeys, testTwelveKey, tdPool, isBinanceSymbol, normalizeTDSymbol } from './market.js';
 import {
   loadSlots, saveSlots, resolveSlot, activeSlots, detectProvider, testSlot, SLOT_COUNT,
-  CLAUDE_MODELS, GEMINI_MODELS, analyzeChartImage, fileToBase64, aiMarketNews,
+  CLAUDE_MODELS, GEMINI_MODELS, listGeminiModels, saveGeminiModelList, loadGeminiModelList, analyzeChartImage, fileToBase64, aiMarketNews,
 } from './ai.js';
 import { drawChart, drawMini } from './chart.js';
 import { exampleSeries } from './examples.js';
@@ -372,10 +372,23 @@ function renderLibrary() {
 // =====================================================================
 function initKeys() {
   const slots = loadSlots();
+  // قائمة Gemini: المجلوبة من Google إن وُجدت، وإلا القائمة الافتراضية
+  const geminiList = () => {
+    const fetched = loadGeminiModelList();
+    if (!fetched) return GEMINI_MODELS;
+    return fetched.models.map((m) => ({ ...m, label: `${m.label} — ${m.id}${m.thinking ? ' 🧠' : ''}` }));
+  };
   const modelOptions = (prov, cur) => {
-    const list = prov === 'claude' ? CLAUDE_MODELS : prov === 'gemini' ? GEMINI_MODELS : [...CLAUDE_MODELS, ...GEMINI_MODELS];
+    const list = prov === 'claude' ? CLAUDE_MODELS : prov === 'gemini' ? geminiList() : [...CLAUDE_MODELS, ...geminiList()];
     const known = list.some((m) => m.id === cur);
-    return `<option value="">تلقائي (الافتراضي)</option>${list.map((m) => `<option value="${m.id}" ${m.id === cur ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}${cur && !known ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : ''}<option value="__custom">✏️ اسم موديل مخصص...</option>`;
+    return `<option value="">تلقائي (الافتراضي)</option>${list.map((m) => `<option value="${esc(m.id)}" ${m.id === cur ? 'selected' : ''}>${esc(m.label)}</option>`).join('')}${cur && !known ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : ''}<option value="__custom">✏️ اسم موديل مخصص...</option>`;
+  };
+  const provOf = (el) => ($('.s-provider', el).value === 'auto' ? detectProvider($('.s-key', el).value) : $('.s-provider', el).value);
+  // وصف النموذج المختار (من القائمة المجلوبة)
+  const modelInfo = (el) => {
+    const box = $('.s-model-info', el);
+    const m = provOf(el) === 'gemini' && (loadGeminiModelList()?.models || []).find((x) => x.id === $('.s-model', el).value);
+    box.textContent = m ? [m.description, m.input ? `مدخلات حتى ${m.input.toLocaleString('en')} توكن` : '', m.output ? `مخرجات حتى ${m.output.toLocaleString('en')}` : ''].filter(Boolean).join(' · ') : '';
   };
   $('#slots').innerHTML = slots.map((s, i) => `
     <div class="slot" data-i="${i}">
@@ -390,7 +403,10 @@ function initKeys() {
         <div class="key-row"><input class="s-key" type="password" autocomplete="off" spellcheck="false" dir="ltr" value="${esc(s.key)}" placeholder="AIza... أو sk-ant-..." />
         <button class="btn s-show" type="button" title="إظهار/إخفاء">👁</button></div></label>
       <label>الموديل <select class="s-model">${modelOptions(s.provider === 'auto' ? detectProvider(s.key) : s.provider, s.model)}</select></label>
-      <div class="key-row"><button class="btn s-test" type="button">🧪 اختبار</button><div class="status muted"></div></div>
+      <div class="s-model-info small muted"></div>
+      <div class="key-row"><button class="btn s-test" type="button">🧪 اختبار</button>
+        <button class="btn s-fetch" type="button" hidden>📋 جلب كل نماذج Gemini</button></div>
+      <div class="status muted"></div>
     </div>`).join('');
 
   $$('.slot[data-i]').forEach((el) => {
@@ -398,6 +414,8 @@ function initKeys() {
       const prov = $('.s-provider', el).value;
       const p = prov === 'auto' ? detectProvider($('.s-key', el).value) : prov;
       $('.s-model', el).innerHTML = modelOptions(p, $('.s-model', el).value);
+      $('.s-fetch', el).hidden = p !== 'gemini';
+      modelInfo(el);
       const st = $('.status', el);
       if ($('.s-key', el).value.trim() && prov === 'auto') st.textContent = p ? `تم التعرف: ${p === 'claude' ? 'Claude' : 'Gemini'}` : 'نوع غير معروف — اختر المزود';
     };
@@ -406,8 +424,29 @@ function initKeys() {
     $('.s-model', el).onchange = (e) => {
       if (e.target.value === '__custom') {
         const v = prompt('اكتب اسم الموديل بالضبط (مثل gemini-2.5-pro أو claude-opus-5-5):');
-        e.target.innerHTML = modelOptions($('.s-provider', el).value === 'auto' ? detectProvider($('.s-key', el).value) : $('.s-provider', el).value, (v || '').trim());
+        e.target.innerHTML = modelOptions(provOf(el), (v || '').trim());
       }
+      modelInfo(el);
+    };
+    $('.s-fetch', el).hidden = provOf(el) !== 'gemini';
+    modelInfo(el);
+    $('.s-fetch', el).onclick = async () => {
+      const st = $('.status', el), btn = $('.s-fetch', el);
+      btn.disabled = true;
+      st.innerHTML = '<span class="spinner"></span> جاري جلب النماذج من Google...';
+      try {
+        const models = await listGeminiModels($('.s-key', el).value);
+        if (!models.length) throw new Error('لم يُرجع Google أي نموذج يدعم توليد المحتوى لهذا المفتاح');
+        saveGeminiModelList(models);
+        // تحديث قوائم كل خانات Gemini مع الحفاظ على اختيار كل خانة
+        $$('.slot[data-i]').forEach((x) => {
+          if (provOf(x) === 'gemini') { $('.s-model', x).innerHTML = modelOptions('gemini', $('.s-model', x).value); modelInfo(x); }
+        });
+        st.innerHTML = `<span class="up">✓ تم جلب ${models.length} نموذج — اختر من قائمة "الموديل" ثم احفظ</span>`;
+        $('.s-model', el).focus();
+      } catch (e) {
+        st.innerHTML = `<span class="down">${esc(e.message)}</span>`;
+      } finally { btn.disabled = false; }
     };
     $('.s-show', el).onclick = () => { const k = $('.s-key', el); k.type = k.type === 'password' ? 'text' : 'password'; };
     $('.s-test', el).onclick = async () => {
