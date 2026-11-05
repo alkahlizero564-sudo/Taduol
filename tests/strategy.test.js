@@ -67,3 +67,26 @@ test('backtest returns consistent stats', () => {
   assert.ok(bt.winRate >= 0 && bt.winRate <= 100);
   bt.list.forEach((t) => assert.ok(['win', 'loss'].includes(t.outcome)));
 });
+
+test('forecast model learns the real direction after each signal level and reports honest accuracy', async () => {
+  const { buildForecastModel, forecastFrom } = await import('../js/strategy.js');
+  // سوق مصطنع "ارتدادي": بعد الإشارة الإيجابية القوية يهبط غالباً
+  const samples = Array.from({ length: 400 }, (_, i) => {
+    const score = ((i * 37) % 100) / 50 - 1; // من -1 إلى 1
+    const up = score > 0.35 ? i % 5 === 0 : score < -0.35 ? i % 5 !== 0 : i % 2 === 0; // 80% عكس الإشارة القوية
+    return { i, score, up };
+  });
+  const m = buildForecastModel(samples, 3);
+  const strongBuy = forecastFrom(m, 0.8), strongSell = forecastFrom(m, -0.8);
+  assert.equal(strongBuy.dir, 'DOWN', 'learned that strong buy signals reverse here');
+  assert.equal(strongSell.dir, 'UP');
+  assert.ok(strongBuy.prob >= 65 && strongBuy.prob <= 85);
+  assert.ok(m.accuracy >= 55, 'out-of-sample accuracy ' + m.accuracy);
+  assert.equal(m.testN, 120);
+  // بيانات عشوائية → دقة قرب 50% واحتمالات قرب 50%
+  let seed = 7; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const noise = Array.from({ length: 600 }, (_, i) => ({ i, score: rnd() * 2 - 1, up: rnd() > 0.5 }));
+  const mn = buildForecastModel(noise, 3);
+  assert.ok(mn.accuracy > 38 && mn.accuracy < 62, 'random accuracy ' + mn.accuracy);
+  assert.ok(forecastFrom(mn, 0.9).prob < 65);
+});

@@ -207,3 +207,71 @@ export async function backtestAsync(candles, analyzeFn, opts = {}, onProgress) {
   }
   return summarizeTrades(r.value);
 }
+
+// =====================================================================
+//  خبير التوقعات: صعود أم هبوط خلال الشموع القادمة؟
+//  يتعلم من سجل نفس الرمز: ماذا حدث فعلاً بعد كل مستوى من قوة الإشارة،
+//  ثم يقيس دقته على فترة لاحقة لم يتعلم منها (تقييم صادق خارج العينة).
+// =====================================================================
+const BIN_EDGES = [-Infinity, -0.35, -0.12, 0.12, 0.35, Infinity];
+const binOf = (score) => BIN_EDGES.findIndex((e, i) => score >= e && score < BIN_EDGES[i + 1]);
+
+function fitBins(samples) {
+  const ups = samples.filter((s) => s.up).length;
+  const base = samples.length ? ups / samples.length : 0.5;
+  const bins = BIN_EDGES.slice(0, -1).map((lo, i) => {
+    const inBin = samples.filter((s) => binOf(s.score) === i);
+    const u = inBin.filter((s) => s.up).length;
+    // تمهيد نحو المعدل العام حتى لا نثق بخانة فيها عينات قليلة
+    const k = 8;
+    return { lo, hi: BIN_EDGES[i + 1], n: inBin.length, p: (u + k * base) / (inBin.length + k) };
+  });
+  return { bins, base };
+}
+
+/** توقع من النموذج: احتمال الصعود */
+export function forecastFrom(model, score) {
+  if (!model?.bins) return null;
+  const pUp = model.bins[binOf(score)].p;
+  return { dir: pUp >= 0.5 ? 'UP' : 'DOWN', pUp, prob: Math.round(Math.max(pUp, 1 - pUp) * 100) };
+}
+
+function* forecastSteps(candles, analyzeFn, { horizon = 3, step = 3, window = 300, start = 150 } = {}) {
+  const samples = [];
+  for (let i = Math.max(start, 60); i + horizon < candles.length; i += step) {
+    yield i;
+    let r; try { r = analyzeFn(candles.slice(Math.max(0, i + 1 - window), i + 1)); } catch { continue; }
+    const fut = candles[i + horizon].c, now = candles[i].c;
+    if (fut === now) continue;
+    samples.push({ i, score: r.score, up: fut > now });
+  }
+  return samples;
+}
+
+/** بناء النموذج من عينات: تعلّم على أول 70%، وقياس الدقة على آخر 30% */
+export function buildForecastModel(samples, horizon) {
+  const cut = Math.floor(samples.length * 0.7);
+  const train = samples.slice(0, cut), test = samples.slice(cut);
+  const m = fitBins(train);
+  const hits = test.filter((s) => (m.bins[binOf(s.score)].p >= 0.5) === s.up).length;
+  const final = fitBins(samples); // النموذج المستخدم فعلياً يتعلم من كل البيانات
+  return { ...final, horizon, samples: samples.length, testN: test.length, accuracy: test.length ? Math.round((hits / test.length) * 100) : null,
+    naive: test.length ? Math.round((Math.max(test.filter((s) => s.up).length, test.filter((s) => !s.up).length) / test.length) * 100) : null };
+}
+
+export async function buildForecastModelAsync(candles, analyzeFn, opts = {}, onProgress) {
+  const it = forecastSteps(candles, analyzeFn, opts);
+  let r = it.next(), t0 = Date.now();
+  while (!r.done) {
+    if (Date.now() - t0 > 30) { onProgress?.(r.value / candles.length); await new Promise((res) => setTimeout(res, 0)); t0 = Date.now(); }
+    r = it.next();
+  }
+  return buildForecastModel(r.value, opts.horizon || 3);
+}
+
+export function buildForecastModelSync(candles, analyzeFn, opts = {}) {
+  const it = forecastSteps(candles, analyzeFn, opts);
+  let r = it.next();
+  while (!r.done) r = it.next();
+  return buildForecastModel(r.value, opts.horizon || 3);
+}
