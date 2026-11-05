@@ -10,8 +10,9 @@ import {
   loadSlots, saveSlots, resolveSlot, activeSlots, detectProvider, testSlot, SLOT_COUNT,
   CLAUDE_MODELS, GEMINI_MODELS, listGeminiModels, saveGeminiModelList, loadGeminiModelList, analyzeChartImage, fileToBase64, aiMarketNews,
 } from './ai.js';
-import { drawChart, drawMini, createChart } from './chart.js';
-import { backtestAsync, buildForecastModelAsync, forecastFrom } from './strategy.js';
+import { drawMini } from './chart.js';
+import { createProChart } from './lwchart.js';
+import { backtestAsync, makeHtfLookup, HIGHER_TF } from './strategy.js';
 import { SmartWebSocket, NativeWebSocket, nativeSocketsAvailable } from './nativews.js';
 import { openStream, applyTick, applyKline } from './stream.js';
 import { getTiingoKey, setTiingoKey, testTiingoKey, tiingoUsage, tiingoTop, toTiingoTicker, parseQuote, probeWebSocket, subscribeMessage, TIINGO_WS } from './tiingo.js';
@@ -38,7 +39,7 @@ function initTheme() {
     const next = isDark ? 'light' : 'dark';
     document.documentElement.dataset.theme = next;
     store.set('taduol.theme', next);
-    if (live.candles) renderChart();
+    live.chart?.applyTheme(); live.big?.applyTheme();
     renderLibrary();
   };
 }
@@ -172,9 +173,7 @@ function listChips(title, items) {
 // =====================================================================
 const live = { candles: null, res: null, timer: null, symbol: '', interval: '', busy: false, ticks: 0, nextAt: 0, lastPrice: null, mtf: {},
   source: '', stream: null, streamState: '', dirty: false, lastPoll: 0,
-  chart: null, big: null, stable: null, stableRes: null, pending: null, bt: null, hist: null,
-  fc: { horizon: 3, model: null, status: '' } };
-const HIGHER_TF = { '1m': '15m', '5m': '1h', '15m': '1h', '30m': '4h', '1h': '4h', '4h': '1d' };
+  chart: null, big: null, stable: null, stableRes: null, pending: null, bt: null, hist: null };
 const MTF_FRAMES = ['15m', '1h', '4h', '1d'];
 const STREAM_LABEL = { connecting: '🟡 جاري الاتصال بالبث...', live: '🟢 بث مباشر', retry: '🟡 إعادة الاتصال بالبث...', down: '🔴 البث متوقف — تحديث دوري' };
 
@@ -186,8 +185,7 @@ function initLive() {
   sel.value = store.get('taduol.refreshEvery', '10');
   sel.onchange = () => { store.set('taduol.refreshEvery', sel.value); scheduleRefresh(); startStream(); };
   $('#liveAiBtn').onclick = runLiveAI;
-  live.fc.horizon = [1, 3, 6].includes(+store.get('taduol.fcHorizon', '3')) ? +store.get('taduol.fcHorizon', '3') : 3;
-  live.chart = createChart($('#chart'));
+  live.chart = createProChart($('#chart'));
   $$('.chart-tools [data-zoom]').forEach((b) => (b.onclick = () => live.chart.zoom(+b.dataset.zoom)));
   $('.chart-tools [data-reset]').onclick = () => live.chart.reset();
   $('#chartFullBtn').onclick = openFull;
@@ -257,6 +255,7 @@ async function loadLive() {
     runBacktest();
     // الفريمات المتعددة: تلقائياً لـ Binance، وبالزر فقط للفوركس (لتوفير الرصيد)
     if (isBinanceSymbol(sym)) loadMTF(false); else renderMTF();
+    loadHTF();
   } catch (e) {
     st.innerHTML = `<span class="down">❌ ${esc(e.message)}</span> — ${isBinanceSymbol(sym) ? 'تأكد أن الرمز صحيح على Binance (مثل BTCUSDT).' : 'للفوركس والذهب استخدم صيغة مثل EUR/USD أو XAU/USD.'}`;
   } finally { live.busy = false; }
@@ -281,6 +280,7 @@ async function tickLive() {
     live.ticks++;
     renderAll(true);
     if (isBinanceSymbol(live.symbol) && live.ticks % Math.max(1, Math.round(60 / refreshSeconds())) === 0) loadMTF(false);
+    if (!live.htf || Date.now() - live.htf.at > 15 * 60e3) loadHTF();
   } catch (e) {
     $('#liveStatus').innerHTML = `<span class="down">⚠️ تعذر التحديث: ${esc(e.message)}</span> — سنحاول مرة أخرى`;
   } finally { live.busy = false; }
@@ -289,7 +289,7 @@ async function tickLive() {
 function renderAll(isTick = false) {
   const candles = live.candles;
   const htfFrame = HIGHER_TF[live.interval];
-  const htf = htfFrame ? live.mtf?.[htfFrame]?.rating?.overall ?? null : null;
+  const htf = htfFrame ? (live.htf?.sym === live.symbol && live.htf?.frame === htfFrame ? live.htf.score : live.mtf?.[htfFrame]?.rating?.overall) ?? null : null;
   const r = analyze(candles, { htf });
   live.res = r;
   // ثبات الإشارة: لا نغيّر القرار المعروض إلا إذا تكرر الاتجاه الجديد في تحليلين متتاليين
@@ -301,7 +301,7 @@ function renderAll(isTick = false) {
   }
   live.recentPatterns = detectPatterns(candles, { lookback: 30 });
   if (live.mtf) live.mtf[live.interval] = { rating: live.res.rating, at: Date.now() };
-  renderChart(); renderPlan(); renderForecast(); renderRating(); renderSignals(); renderPatterns(); renderLevels(); renderMTF();
+  renderChart(); renderPlan(); renderRating(); renderSignals(); renderPatterns(); renderLevels(); renderMTF();
   live.lastRenderAt = Date.now(); live.isTick = isTick;
   renderPriceLine();
   renderBudget();
@@ -432,7 +432,7 @@ function openFull() {
   if (!live.candles) { $('#liveStatus').innerHTML = '<span class="muted">اضغط "تحليل" أولاً لتحميل الشارت.</span>'; return; }
   $('#chartFull').hidden = false;
   document.body.classList.add('no-scroll');
-  if (!live.big) live.big = createChart($('#chartBig'), { fullscreen: true, rsi: true });
+  if (!live.big) live.big = createProChart($('#chartBig'), { fullscreen: true, rsi: true });
   history.pushState({ chartFull: 1 }, '');
   renderChart();
 }
@@ -451,7 +451,6 @@ function renderFullHead() {
   $$('#cfTfs [data-tf]').forEach((b) => b.classList.toggle('active', b.dataset.tf === live.interval));
   const L = r.rating ? RATING_LABELS[r.rating.label] : null;
   $('#cfPlan').innerHTML = [
-    (() => { const f = live.fc.model && live.res ? forecastFrom(live.fc.model, live.res.score) : null; return f ? `<span class="pill ${f.dir === 'UP' ? 'BUY' : 'SELL'}">🔮 ${f.dir === 'UP' ? '⬆ صعود' : '⬇ هبوط'} ${f.prob}% <span class="muted">(دقة ${live.fc.model.accuracy ?? '—'}%)</span></span>` : ''; })(),
     `<span class="pill ${dir}">${DIR_AR[dir]} <span class="grade ${r.grade}">${r.grade}</span></span>`,
     `<span class="pill">${r.entryType === 'limit' ? 'معلّق' : 'دخول'} <b>${fmt(r.entry)}</b></span>`,
     `<span class="pill down">وقف <b>${fmt(r.stopLoss)}</b></span>`,
@@ -515,74 +514,37 @@ function renderPlan() {
   renderFullHead();
 }
 
-// =====================================================================
-//  🔮 خبير التوقعات — صعود أم هبوط خلال الشموع القادمة
-// =====================================================================
-async function runForecastModel() {
-  const h = live.hist;
-  if (!h || h.sym !== live.symbol || h.iv !== live.interval) return;
-  const horizon = live.fc.horizon;
-  live.fc = { horizon, model: null, status: 'loading', p: 0 }; renderForecast();
+/** تقييم الفريم الأكبر (فلتر أساسي للدرجة A) — طلب واحد كل 15 دقيقة */
+async function loadHTF() {
+  const sym = live.symbol, iv = live.interval, frame = HIGHER_TF[iv];
+  if (!frame) { live.htf = null; return; }
+  live.htf = { ...(live.htf || {}), at: Date.now() }; // نمنع التكرار أثناء الجلب
   try {
-    let lastP = 0;
-    const model = await buildForecastModelAsync(h.candles, (sl) => analyze(sl), { horizon, step: 3, start: Math.min(300, Math.floor(h.candles.length / 2)) }, (p) => {
-      if (p - lastP > 0.1) { lastP = p; live.fc.p = p; renderForecast(); }
-    });
-    if (h.sym === live.symbol && h.iv === live.interval && horizon === live.fc.horizon) { live.fc = { horizon, model, status: 'done' }; renderForecast(); }
-  } catch (e) { live.fc = { horizon, model: null, status: 'error', msg: e.message }; renderForecast(); }
-}
-
-function renderForecast() {
-  const box = $('#forecastCard');
-  if (!box || !live.res) return;
-  const { horizon, model, status } = live.fc;
-  const tabs = `<div class="fc-tabs">${[1, 3, 6].map((h) => `<button class="chip-btn ${h === horizon ? 'active' : ''}" data-fch="${h}">${h === 1 ? 'الشمعة القادمة' : h + ' شموع'}</button>`).join('')}</div>`;
-  const ms = { '1m': 6e4, '5m': 3e5, '15m': 9e5, '30m': 18e5, '1h': 36e5, '4h': 144e5, '1d': 864e5, '1w': 6048e5 }[live.interval] || 36e5;
-  const until = new Date(live.candles[live.candles.length - 1].t + ms * (horizon + 1));
-  const untilTxt = ['1d', '1w'].includes(live.interval) ? until.toLocaleDateString('ar-EG') : until.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
-  if (!model) {
-    box.innerHTML = `<div class="toolbar"><h3 class="grow">🔮 خبير التوقعات</h3>${tabs}</div>
-      <p class="muted">${status === 'error' ? 'تعذر بناء النموذج: ' + esc(live.fc.msg) : `<span class="spinner"></span> يتعلم من سجل ${esc(live.symbol)} على فريم ${esc(live.interval)}${live.fc.p ? ' — ' + Math.round(live.fc.p * 100) + '%' : ''}...`}</p>`;
-  } else {
-    const f = forecastFrom(model, live.res.score);
-    const weak = model.accuracy == null || model.accuracy < 55 || model.testN < 40;
-    const verdict = model.accuracy == null ? 'لا توجد بيانات كافية لقياس الدقة.'
-      : model.accuracy >= 58 && model.testN >= 40 ? `✅ دقة جيدة نسبياً على هذا الرمز: صحيح في <b>${model.accuracy}%</b> من ${model.testN} توقعاً لم يتعلم منها.`
-      : model.accuracy >= 55 ? `دقته على هذا الرمز: <b>${model.accuracy}%</b> من ${model.testN} توقعاً لم يتعلم منها — أفضل قليلاً من التخمين.`
-      : model.accuracy < 45 ? `⛔ <b>دقته على هذا الرمز ${model.accuracy}%</b> من ${model.testN} توقعاً لم يتعلم منها — <b>أسوأ من التخمين</b>. على هذا الرمز/الفريم لا تستخدم التوقع؛ جرّب فريماً أو مدى آخر.`
-      : `⚠️ <b>دقته على هذا الرمز ${model.accuracy}%</b> من ${model.testN} توقعاً لم يتعلم منها — <b>قريبة من التخمين (50%)</b>. لا تعتمد عليه وحده.`;
-    box.className = `card forecast-card fc-${f.dir}`;
-    box.innerHTML = `<div class="toolbar"><h3 class="grow">🔮 خبير التوقعات — ${esc(live.symbol)} · ${esc(live.interval)}</h3>${tabs}</div>
-      <div class="fc-main">
-        <div class="fc-arrow">${f.dir === 'UP' ? '⬆' : '⬇'}</div>
-        <div><div class="fc-word">${f.dir === 'UP' ? 'صعود' : 'هبوط'}</div>
-          <div class="fc-prob">احتمال ${f.prob}% خلال ${horizon === 1 ? 'الشمعة القادمة' : horizon + ' شموع'} (حتى ${esc(untilTxt)})</div></div>
-      </div>
-      <div class="fc-honest ${weak ? 'weak' : 'good'}">${verdict}
-        <br><span class="muted small">يتعلم الخبير من ${model.samples} حالة سابقة على نفس الرمز: ماذا حدث فعلاً بعد كل مستوى من قوة الإشارة (الشموع + 26 مؤشراً + البث المباشر). لا أحد يستطيع التنبؤ بالسوق بيقين.</span></div>`;
-  }
-  $$('[data-fch]', box).forEach((b) => (b.onclick = () => {
-    const h = +b.dataset.fch; if (h === live.fc.horizon) return;
-    live.fc.horizon = h; store.set('taduol.fcHorizon', String(h)); live.fc.model = null; runForecastModel(); renderForecast();
-  }));
-  renderFullHead();
+    const c = await getCandles(sym, frame, 300, { ttl: 10 * 60e3 });
+    if (sym !== live.symbol || iv !== live.interval) return;
+    const rating = technicalRating(c, computeAll(c));
+    live.htf = { sym, frame, score: rating.overall, label: rating.label, at: Date.now() };
+    if (live.mtf) live.mtf[frame] = { rating, at: Date.now() };
+    renderAll(true); renderMTF();
+  } catch { live.htf = { sym, frame, score: null, at: Date.now() }; }
 }
 
 /** اختبار تاريخي للاستراتيجية على نفس الرمز والفريم (بالخلفية، على دفعات) */
 async function runBacktest() {
   const sym = live.symbol, iv = live.interval;
   live.bt = { status: 'loading' };
-  live.fc = { horizon: live.fc.horizon, model: null, status: 'loading', p: 0 };
-  renderPlan(); renderForecast();
+  renderPlan();
   try {
     let c = live.candles;
     try { const more = await getCandles(sym, iv, 1000, { ttl: 600000 }); if (more.length > c.length) c = more; } catch { /* نكتفي بالشموع الحالية */ }
     live.hist = { sym, iv, candles: c };
     let lastP = 0;
-    const bt = await backtestAsync(c, (sl) => analyze(sl), { start: Math.min(300, Math.floor(c.length / 2)), step: 2, minGrade: 'A' }, (p) => {
+    // نفس فلتر الفريم الأكبر داخل الاختبار (من الشموع الكبيرة المكتملة فقط)
+    const htfAt = makeHtfLookup(c, iv, (big) => technicalRating(big, computeAll(big)).overall);
+    const bt = await backtestAsync(c, (sl) => analyze(sl, { htf: htfAt(sl[sl.length - 1].t) }), { start: Math.min(300, Math.floor(c.length / 2)), step: 2, minGrade: 'A' }, (p) => {
       if (p - lastP > 0.1 && sym === live.symbol) { lastP = p; live.bt = { status: 'loading', p }; renderPlan(); }
     });
-    if (sym === live.symbol && iv === live.interval) { live.bt = { status: 'done', ...bt, bars: c.length }; renderPlan(); runForecastModel(); }
+    if (sym === live.symbol && iv === live.interval) { live.bt = { status: 'done', ...bt, bars: c.length }; renderPlan(); }
   } catch (e) {
     if (sym === live.symbol) { live.bt = { status: 'error', msg: e.message }; renderPlan(); }
   }
@@ -616,8 +578,7 @@ async function runLiveAI() {
   const card = $('#liveAiCard'), box = $('#liveAi');
   card.hidden = false; box.innerHTML = '<div class="progress"><span class="spinner"></span> جاري إرسال الشارت والمؤشرات للذكاء الاصطناعي...</div>';
   try {
-    const canvas = $('#chart');
-    const url = canvas.toDataURL('image/png');
+    const url = live.chart.screenshot().toDataURL('image/png');
     const data = { data: url.slice(url.indexOf(',') + 1), mime: 'image/png' };
     const ctx = summaryForAI(live.res, live.symbol, live.interval) +
       '\nأنماط الشموع (آخر 30 شمعة): ' + live.recentPatterns.map((p) => `${p.en}@-${live.candles.length - 1 - p.index}`).join(', ') +

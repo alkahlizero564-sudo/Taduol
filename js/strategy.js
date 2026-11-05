@@ -59,7 +59,11 @@ export function buildPlan(candles, ctx) {
   // 3) التقييم الفني الشامل
   if (rating) f(rating.overall * side > 0.1, `التقييم الفني (26 مؤشراً) يؤيد ${side === 1 ? 'الشراء' : 'البيع'}`, 1);
   // 4) الفريم الأكبر
-  if (htf != null && isFinite(htf)) f(htf * side > 0.1 ? true : htf * side < -0.1 ? false : null, `الفريم الأكبر ${htf * side > 0.1 ? 'متوافق' : htf * side < -0.1 ? 'عكس الاتجاه' : 'محايد'}`, 1.5);
+  // اختُبر على بيانات حقيقية: اشتراط موافقة قوية (> 0.3) حسّن النتائج في فترة التعلم وفترة الاختبار معاً
+  const htfKnown = htf != null && isFinite(htf);
+  if (htfKnown) f(htf * side > 0.3 ? true : htf * side < -0.1 ? false : null,
+    `الفريم الأكبر ${htf * side > 0.3 ? 'متوافق بقوة' : htf * side > 0.1 ? 'متوافق بضعف' : htf * side < -0.1 ? 'عكس الاتجاه' : 'محايد'}`, 1.5);
+  else f(null, 'الفريم الأكبر غير متاح بعد', 0);
   // 5) الزخم دون تشبع
   if (rsi != null && hist != null) {
     const okMom = side === 1 ? hist > 0 && rsi > 45 && rsi < 72 : hist < 0 && rsi < 55 && rsi > 28;
@@ -131,7 +135,7 @@ export function buildPlan(candles, ctx) {
   const noBlock = ok(/قد يعيق|خالٍ من/) === true;
   let grade = 'C';
   if (trendOk && structOk) grade = (entryType === 'limit' || confluence >= 0.75) && noBlock ? 'A' : 'B';
-  if (htfAgainst && grade === 'A') grade = 'B';
+  if (grade === 'A' && htfKnown && !(htf * side > 0.3)) grade = 'B'; // A يتطلب موافقة قوية من الفريم الأكبر
   // الإشارة الفعلية لدرجة A فقط (أفضل نتيجة في الاختبار التاريخي خارج العينة)؛ B للاطلاع فقط
   const direction = grade === 'A' && !htfAgainst ? S : 'WAIT';
   const confidence = Math.round(Math.min(92, 100 * (0.6 * confluence + 0.4 * Math.min(1, Math.abs(score) * 1.8))));
@@ -209,69 +213,44 @@ export async function backtestAsync(candles, analyzeFn, opts = {}, onProgress) {
 }
 
 // =====================================================================
-//  خبير التوقعات: صعود أم هبوط خلال الشموع القادمة؟
-//  يتعلم من سجل نفس الرمز: ماذا حدث فعلاً بعد كل مستوى من قوة الإشارة،
-//  ثم يقيس دقته على فترة لاحقة لم يتعلم منها (تقييم صادق خارج العينة).
+//  الفريم الأكبر داخل الاختبار التاريخي
+//  نبني شموع الفريم الأكبر من شموع الفريم الحالي (المكتملة فقط — بدون النظر للمستقبل)
 // =====================================================================
-const BIN_EDGES = [-Infinity, -0.35, -0.12, 0.12, 0.35, Infinity];
-const binOf = (score) => BIN_EDGES.findIndex((e, i) => score >= e && score < BIN_EDGES[i + 1]);
+const TF_MS = { '1m': 6e4, '5m': 3e5, '15m': 9e5, '30m': 18e5, '1h': 36e5, '4h': 144e5, '1d': 864e5, '1w': 6048e5 };
+export const HIGHER_TF = { '1m': '15m', '5m': '1h', '15m': '1h', '30m': '4h', '1h': '4h', '4h': '1d', '1d': '1w' };
 
-function fitBins(samples) {
-  const ups = samples.filter((s) => s.up).length;
-  const base = samples.length ? ups / samples.length : 0.5;
-  const bins = BIN_EDGES.slice(0, -1).map((lo, i) => {
-    const inBin = samples.filter((s) => binOf(s.score) === i);
-    const u = inBin.filter((s) => s.up).length;
-    // تمهيد نحو المعدل العام حتى لا نثق بخانة فيها عينات قليلة
-    const k = 8;
-    return { lo, hi: BIN_EDGES[i + 1], n: inBin.length, p: (u + k * base) / (inBin.length + k) };
-  });
-  return { bins, base };
+function tfBucket(t, tf) {
+  if (tf === '1w') { const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - ((d.getUTCDay() + 6) % 7) * 864e5; }
+  return Math.floor(t / TF_MS[tf]) * TF_MS[tf];
 }
 
-/** توقع من النموذج: احتمال الصعود */
-export function forecastFrom(model, score) {
-  if (!model?.bins) return null;
-  const pUp = model.bins[binOf(score)].p;
-  return { dir: pUp >= 0.5 ? 'UP' : 'DOWN', pUp, prob: Math.round(Math.max(pUp, 1 - pUp) * 100) };
-}
-
-function* forecastSteps(candles, analyzeFn, { horizon = 3, step = 3, window = 300, start = 150 } = {}) {
-  const samples = [];
-  for (let i = Math.max(start, 60); i + horizon < candles.length; i += step) {
-    yield i;
-    let r; try { r = analyzeFn(candles.slice(Math.max(0, i + 1 - window), i + 1)); } catch { continue; }
-    const fut = candles[i + horizon].c, now = candles[i].c;
-    if (fut === now) continue;
-    samples.push({ i, score: r.score, up: fut > now });
+/** تجميع شموع إلى فريم أكبر */
+export function aggregate(candles, tf) {
+  const out = [];
+  for (const k of candles) {
+    const b = tfBucket(k.t, tf), l = out[out.length - 1];
+    if (l && l.t === b) { l.h = Math.max(l.h, k.h); l.l = Math.min(l.l, k.l); l.c = k.c; l.v += k.v || 0; }
+    else out.push({ t: b, o: k.o, h: k.h, l: k.l, c: k.c, v: k.v || 0 });
   }
-  return samples;
+  return out;
 }
 
-/** بناء النموذج من عينات: تعلّم على أول 70%، وقياس الدقة على آخر 30% */
-export function buildForecastModel(samples, horizon) {
-  const cut = Math.floor(samples.length * 0.7);
-  const train = samples.slice(0, cut), test = samples.slice(cut);
-  const m = fitBins(train);
-  const hits = test.filter((s) => (m.bins[binOf(s.score)].p >= 0.5) === s.up).length;
-  const final = fitBins(samples); // النموذج المستخدم فعلياً يتعلم من كل البيانات
-  return { ...final, horizon, samples: samples.length, testN: test.length, accuracy: test.length ? Math.round((hits / test.length) * 100) : null,
-    naive: test.length ? Math.round((Math.max(test.filter((s) => s.up).length, test.filter((s) => !s.up).length) / test.length) * 100) : null };
-}
-
-export async function buildForecastModelAsync(candles, analyzeFn, opts = {}, onProgress) {
-  const it = forecastSteps(candles, analyzeFn, opts);
-  let r = it.next(), t0 = Date.now();
-  while (!r.done) {
-    if (Date.now() - t0 > 30) { onProgress?.(r.value / candles.length); await new Promise((res) => setTimeout(res, 0)); t0 = Date.now(); }
-    r = it.next();
-  }
-  return buildForecastModel(r.value, opts.horizon || 3);
-}
-
-export function buildForecastModelSync(candles, analyzeFn, opts = {}) {
-  const it = forecastSteps(candles, analyzeFn, opts);
-  let r = it.next();
-  while (!r.done) r = it.next();
-  return buildForecastModel(r.value, opts.horizon || 3);
+/**
+ * يُرجع دالة (t) => تقييم الفريم الأكبر عند الوقت t، من الشموع الكبيرة المكتملة قبله فقط
+ * @param {(candles:Array)=>number} ratingFn
+ */
+export function makeHtfLookup(candles, ltf, ratingFn) {
+  const htf = HIGHER_TF[ltf];
+  if (!htf) return () => null;
+  const big = aggregate(candles, htf);
+  const cache = new Map();
+  return (t) => {
+    const cur = tfBucket(t, htf);
+    let hi = big.length; // أول شمعة كبيرة تبدأ عند/بعد الشمعة الحالية (غير مكتملة)
+    let lo = 0;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (big[m].t < cur) lo = m + 1; else hi = m; }
+    if (lo < 60) return null;
+    if (!cache.has(lo)) { try { cache.set(lo, ratingFn(big.slice(Math.max(0, lo - 300), lo))); } catch { cache.set(lo, null); } }
+    return cache.get(lo);
+  };
 }

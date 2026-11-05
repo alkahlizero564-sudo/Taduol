@@ -100,10 +100,6 @@
         <div id="refreshNote" class="small muted"></div>
       </div>
 
-      <div class="card forecast-card" id="forecastCard">
-        <div class="empty">🔮 خبير التوقعات: اضغط "تحليل" ليتوقع الصعود أو الهبوط.</div>
-      </div>
-
       <div class="card" id="ratingCard">
         <div id="ratingBox"><div class="empty">قراءة السوق بأشهر 26 مؤشراً تظهر هنا بعد التحليل.</div></div>
         <div id="mtfBox"></div>
@@ -117,8 +113,8 @@
             <button class="chip-btn" data-zoom="1.25" title="تصغير">－</button>
             <button class="chip-btn" data-reset="1" title="إعادة الضبط">⟲</button>
           </div>
-          <canvas id="chart"></canvas>
-          <p class="chart-hint small muted">اسحب للتنقل · إصبعين للتكبير · نقرة لعرض بيانات الشمعة · نقرتان لإعادة الضبط</p>
+          <div id="chart" class="lw-host"></div>
+          <p class="chart-hint small muted">اسحب للتنقل · إصبعين للتكبير · المس الشارت لعرض بيانات الشمعة · اسحب محور الأسعار لتمديده</p>
         </div>
         <div class="card" id="tradePlan">
           <div class="empty">اختر أصلاً واضغط "تحليل".</div>
@@ -267,7 +263,7 @@
         <button class="chip-btn" data-cfzoom="0.8">＋</button><button class="chip-btn" data-cfzoom="1.25">－</button><button class="chip-btn" id="cfReset">⟲</button>
       </div>
     </div>
-    <canvas id="chartBig"></canvas>
+    <div id="chartBig" class="lw-host"></div>
     <div class="cf-plan" id="cfPlan"></div>
   </div>
 
