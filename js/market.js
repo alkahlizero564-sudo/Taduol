@@ -62,6 +62,7 @@ export function normalizeTDSymbol(symbol) {
 
 // ----------------- Twelve Data (حتى 4 مفاتيح عبر المنظِّم) -----------------
 import { pool, getTwelveKeys, setTwelveKeys, getTwelveKey, setTwelveKey } from './twelvedata.js';
+import { tiingoCandles, getTiingoKey, TiingoError } from './tiingo.js';
 export { pool as tdPool, getTwelveKeys, setTwelveKeys, getTwelveKey, setTwelveKey };
 
 const TD_INTERVALS = { '1m': '1min', '5m': '5min', '15m': '15min', '30m': '30min', '1h': '1h', '4h': '4h', '1d': '1day', '1w': '1week' };
@@ -138,11 +139,41 @@ export function mergeCandles(old, fresh, max = 300) {
   return out.slice(-max);
 }
 
-/** شموع: Binance للعملات الرقمية، و Twelve Data للفوركس والذهب والأسهم */
+/** شموع: Binance للعملات الرقمية، و Tiingo ثم Twelve Data للفوركس والذهب والأسهم */
 export async function getCandles(symbol = 'BTCUSDT', interval = '1h', limit = 300, opts = {}) {
-  if (!isBinanceSymbol(symbol)) return tdCandles(symbol, interval, limit, opts);
+  if (!isBinanceSymbol(symbol)) return forexCandles(symbol, interval, limit, opts);
   const data = await binance(`/api/v3/klines?symbol=${encodeURIComponent(symbol.toUpperCase())}&interval=${interval}&limit=${limit}`);
-  return data.map((r) => ({ t: r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5] }));
+  const c = data.map((r) => ({ t: r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5] }));
+  c.source = 'Binance';
+  return c;
+}
+
+// ----------------- الفوركس والذهب: Tiingo أولاً ثم Twelve Data -----------------
+let tiingoRestBlocked = false; // المتصفح يمنع REST من Tiingo (CORS) — لا نكرر المحاولة
+
+/** أزواج العملات والمعادن فقط (مثل EUR/USD و XAU/USD) — Tiingo لا يغطي الأسهم هنا */
+export const isTiingoSymbol = (symbol) => /^[A-Z]{3}\/[A-Z]{3}$/.test(normalizeTDSymbol(symbol));
+
+async function forexCandles(symbol, interval, limit, opts) {
+  const errors = [];
+  if (getTiingoKey() && isTiingoSymbol(symbol) && !tiingoRestBlocked) {
+    try {
+      const c = await tiingoCandles(normalizeTDSymbol(symbol), interval, limit, opts.ttl != null ? { cacheMs: opts.ttl } : {});
+      c.source = 'Tiingo';
+      return c;
+    } catch (e) {
+      if (e instanceof TiingoError && e.kind === 'cors') tiingoRestBlocked = true;
+      errors.push(e.message);
+    }
+  }
+  if (getTwelveKeys().length) {
+    const c = await tdCandles(symbol, interval, limit, opts);
+    c.source = 'Twelve Data';
+    if (errors.length) c.note = errors[0];
+    return c;
+  }
+  if (errors.length) throw new Error(errors[0]);
+  throw new Error('هذا الرمز يحتاج مفتاح Tiingo أو Twelve Data — أضفه في صفحة "المفاتيح"');
 }
 
 /** أسعار وتغير 24 ساعة لعدة رموز */

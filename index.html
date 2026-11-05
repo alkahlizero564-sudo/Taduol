@@ -197,6 +197,17 @@
           <button id="clearKeys" class="btn danger">🗑️ مسح الكل</button>
           <span id="keysMsg" class="muted"></span>
         </div>
+        <div class="slot td-slot tiingo-slot">
+          <h4>⚡ Tiingo — بث مباشر للفوركس والذهب (الأفضل)</h4>
+          <p class="muted small">الأسعار تصل لحظياً عبر البث المباشر <b>بدون استهلاك طلبات</b>، لكل أزواج العملات والذهب والفضة (EUR/USD، XAU/USD...).
+            الشموع التاريخية تأتي من Tiingo داخل تطبيق Android (حد مجاني 50 طلب/ساعة و1000/يوم)، وفي المتصفح العادي من Twelve Data.</p>
+          <label>مفتاح Tiingo
+            <div class="key-row"><input id="tiingoKey" type="password" autocomplete="off" spellcheck="false" dir="ltr" placeholder="Tiingo API token" />
+            <button class="btn" id="tiingoShow" type="button" title="إظهار/إخفاء">👁</button>
+            <button class="btn" id="tiingoTest" type="button">🧪 اختبار</button></div></label>
+          <div id="tiingoStatus" class="status small"></div>
+          <div id="tiingoUsage" class="small muted"></div>
+        </div>
         <div class="slot td-slot">
           <h4>📡 Twelve Data — بيانات حية للفوركس والذهب والأسهم</h4>
           <p class="muted small">مطلوب لشموع EUR/USD و XAU/USD و AAPL وغيرها. العملات الرقمية (مثل BTCUSDT) تعمل من Binance بدون مفتاح.
@@ -212,6 +223,7 @@
           <ul>
             <li><b>Gemini:</b> من Google AI Studio ← Get API key (يوجد استخدام مجاني).</li>
             <li><b>Claude:</b> من Anthropic Console ← API Keys.</li>
+            <li><b>Tiingo:</b> سجّل في tiingo.com ثم انسخ المفتاح من tiingo.com/account/api/token (مجاني).</li>
             <li><b>Twelve Data:</b> من twelvedata.com ← Dashboard ← API Keys (يوجد مفتاح مجاني).</li>
             <li>للحماية: استخدم مفاتيح بحدود إنفاق منخفضة، ولا تستخدم التطبيق على جهاز مشترك.</li>
           </ul>

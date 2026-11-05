@@ -214,3 +214,6 @@ td.num { direction: ltr; text-align: left; font-variant-numeric: tabular-nums; }
 .price-tick { transition: color .3s; }
 .price-tick.up { color: var(--up); } .price-tick.down { color: var(--down); }
 #nextTick { align-self: center; }
+
+.tiingo-slot { border-color: var(--accent); margin-bottom: .8rem; }
+.ticker .since { font-size: .75rem; }

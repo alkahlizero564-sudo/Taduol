@@ -5,12 +5,14 @@ import { PATTERNS, PATTERN_MAP, detectPatterns } from './patterns.js';
 import { analyze, summaryForAI, fmt } from './analysis.js';
 import { computeAll } from './indicators.js';
 import { technicalRating, RATING_LABELS } from './rating.js';
-import { getCandles, getLatestCandles, mergeCandles, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, tdWatchlist, tdQuotes, getTwelveKeys, setTwelveKeys, testTwelveKey, tdPool, isBinanceSymbol, normalizeTDSymbol } from './market.js';
+import { getCandles, getLatestCandles, mergeCandles, isTiingoSymbol, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, tdWatchlist, tdQuotes, getTwelveKeys, setTwelveKeys, testTwelveKey, tdPool, isBinanceSymbol, normalizeTDSymbol } from './market.js';
 import {
   loadSlots, saveSlots, resolveSlot, activeSlots, detectProvider, testSlot, SLOT_COUNT,
   CLAUDE_MODELS, GEMINI_MODELS, listGeminiModels, saveGeminiModelList, loadGeminiModelList, analyzeChartImage, fileToBase64, aiMarketNews,
 } from './ai.js';
 import { drawChart, drawMini } from './chart.js';
+import { openStream, applyTick, applyKline } from './stream.js';
+import { getTiingoKey, setTiingoKey, testTiingoKey, tiingoUsage, tiingoTop, toTiingoTicker, parseQuote } from './tiingo.js';
 import { exampleSeries } from './examples.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -44,7 +46,9 @@ function initTabs() {
     $$('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === name));
     $$('.panel').forEach((p) => p.classList.toggle('active', p.id === 'tab-' + name));
     store.set('taduol.tab', name);
+    if (name !== 'markets') stopFxWatch();
     if (name === 'markets' && !markets.loaded) loadMarkets();
+    else if (name === 'markets' && getTiingoKey() && !fxWatch.ws) loadTiingoTickers();
     if (name === 'library') renderLibrary();
     if (name === 'live' && live.candles) renderChart();
   };
@@ -63,7 +67,7 @@ function fillSelectors() {
 function updateKeysBadge() {
   const n = activeSlots().length;
   const b = $('#keysBadge');
-  b.textContent = (n ? `${n} مفتاح AI` : 'لا توجد مفاتيح') + (getTwelveKeys().length ? ` · Twelve Data ×${getTwelveKeys().length}` : '');
+  b.textContent = (n ? `${n} مفتاح AI` : 'لا توجد مفاتيح') + (getTiingoKey() ? ' · Tiingo ⚡' : '') + (getTwelveKeys().length ? ` · Twelve Data ×${getTwelveKeys().length}` : '');
   b.classList.toggle('ok', n > 0);
 }
 
@@ -164,8 +168,10 @@ function listChips(title, items) {
 // =====================================================================
 //  السوق المباشر
 // =====================================================================
-const live = { candles: null, res: null, timer: null, symbol: '', interval: '', busy: false, ticks: 0, nextAt: 0, lastPrice: null, mtf: {} };
+const live = { candles: null, res: null, timer: null, symbol: '', interval: '', busy: false, ticks: 0, nextAt: 0, lastPrice: null, mtf: {},
+  source: '', stream: null, streamState: '', dirty: false, lastPoll: 0 };
 const MTF_FRAMES = ['15m', '1h', '4h', '1d'];
+const STREAM_LABEL = { connecting: '🟡 جاري الاتصال بالبث...', live: '🟢 بث مباشر', retry: '🟡 إعادة الاتصال بالبث...', down: '🔴 البث متوقف — تحديث دوري' };
 
 function initLive() {
   $('#liveBtn').onclick = () => loadLive();
@@ -173,16 +179,17 @@ function initLive() {
   $('#liveInterval').onchange = () => live.candles && loadLive();
   const sel = $('#refreshEvery');
   sel.value = store.get('taduol.refreshEvery', '10');
-  sel.onchange = () => { store.set('taduol.refreshEvery', sel.value); scheduleRefresh(); };
+  sel.onchange = () => { store.set('taduol.refreshEvery', sel.value); scheduleRefresh(); startStream(); };
   $('#liveAiBtn').onclick = runLiveAI;
   window.addEventListener('resize', () => { if (live.candles && $('#tab-live').classList.contains('active')) renderChart(); });
-  // عداد التحديث القادم
+  // عداد التحديث القادم + رسم حركة البث كل ثانية (خفيف: الشارت والسعر فقط)
   setInterval(() => {
     const el = $('#nextTick');
+    if (live.dirty && live.candles && !document.hidden) { live.dirty = false; renderChart(); renderPriceLine(); }
     if (!live.timer || !live.nextAt) { el.textContent = ''; return; }
     const s = Math.max(0, Math.ceil((live.nextAt - Date.now()) / 1000));
-    el.textContent = document.hidden ? '⏸ متوقف أثناء إخفاء الصفحة' : `🔄 التحديث بعد ${s}ث`;
-  }, 500);
+    el.textContent = document.hidden ? '⏸ متوقف أثناء إخفاء الصفحة' : `🔄 إعادة التحليل بعد ${s}ث`;
+  }, 1000);
 }
 
 const refreshSeconds = () => +($('#refreshEvery').value || 0);
@@ -194,6 +201,27 @@ function scheduleRefresh() {
   live.nextAt = Date.now() + sec * 1000;
   live.timer = setInterval(() => { live.nextAt = Date.now() + sec * 1000; tickLive(); }, sec * 1000);
   renderBudget();
+}
+
+/** مصدر البث المناسب للرمز الحالي */
+function streamSourceFor(sym) {
+  if (isBinanceSymbol(sym)) return 'binance';
+  if (getTiingoKey() && isTiingoSymbol(sym)) return 'tiingo';
+  return null;
+}
+
+function startStream() {
+  live.stream?.stop(); live.stream = null; live.streamState = '';
+  const src = live.symbol && refreshSeconds() ? streamSourceFor(live.symbol) : null;
+  if (!src) { renderPriceLine(); return; }
+  const sym = live.symbol, iv = live.interval;
+  live.stream = openStream({
+    symbol: sym, interval: iv, source: src, key: getTiingoKey(),
+    refPrice: () => live.candles?.[live.candles.length - 1]?.c,
+    onStatus: (s) => { live.streamState = s; renderPriceLine(); renderBudget(); },
+    onKline: (k) => { if (live.symbol === sym && live.interval === iv) { live.candles = applyKline(live.candles, k); live.dirty = true; } },
+    onTick: (q) => { if (live.symbol === sym && live.interval === iv) { live.candles = applyTick(live.candles, q.price, q.t, iv); live.dirty = true; } },
+  });
 }
 
 /** تحميل كامل: 300 شمعة + تحليل + الفريمات المتعددة */
@@ -208,26 +236,35 @@ async function loadLive() {
     const candles = await getCandles(sym, iv, 300, { onWait: (sec) => { st.innerHTML = `<span class="spinner"></span> تم استهلاك رصيد الدقيقة — انتظار ${sec} ثانية ثم المتابعة تلقائياً...`; } });
     const changed = sym !== live.symbol;
     live.candles = candles; live.symbol = sym; live.interval = iv; live.lastPrice = null; live.ticks = 0;
+    live.source = candles.source || ''; live.sourceNote = candles.note || ''; live.lastPoll = Date.now();
     if (changed) live.mtf = {};
     renderAll();
     scheduleRefresh();
-    // الفريمات المتعددة: تلقائياً لـ Binance، وبالزر فقط لـ Twelve Data (لتوفير الرصيد)
+    startStream();
+    // الفريمات المتعددة: تلقائياً لـ Binance، وبالزر فقط للفوركس (لتوفير الرصيد)
     if (isBinanceSymbol(sym)) loadMTF(false); else renderMTF();
   } catch (e) {
     st.innerHTML = `<span class="down">❌ ${esc(e.message)}</span> — ${isBinanceSymbol(sym) ? 'تأكد أن الرمز صحيح على Binance (مثل BTCUSDT).' : 'للفوركس والذهب استخدم صيغة مثل EUR/USD أو XAU/USD.'}`;
   } finally { live.busy = false; }
 }
 
-/** تحديث خفيف كل 10 ثوانٍ: آخر 3 شموع فقط ثم إعادة التحليل */
+/** كل 10 ثوانٍ: إعادة التحليل. مع البث المباشر لا نحتاج أي طلب؛ بدونه نجلب آخر 3 شموع */
 async function tickLive() {
   if (live.busy || !live.candles || document.hidden) return;
   live.busy = true;
   try {
-    const fresh = await getLatestCandles(live.symbol, live.interval, 3);
-    live.candles = mergeCandles(live.candles, fresh, 300);
+    const streaming = live.stream && live.streamState === 'live';
+    if (!streaming) {
+      // Tiingo حده 50 طلب/ساعة: بدون بث نجلب كل 90 ثانية فقط
+      const minGap = live.source === 'Tiingo' ? 90000 : 0;
+      if (Date.now() - live.lastPoll >= minGap) {
+        const fresh = await getLatestCandles(live.symbol, live.interval, 3);
+        live.candles = mergeCandles(live.candles, fresh, 300);
+        live.lastPoll = Date.now();
+      }
+    }
     live.ticks++;
     renderAll(true);
-    // تحديث الفريمات المتعددة كل دقيقة تقريباً (Binance فقط)
     if (isBinanceSymbol(live.symbol) && live.ticks % Math.max(1, Math.round(60 / refreshSeconds())) === 0) loadMTF(false);
   } catch (e) {
     $('#liveStatus').innerHTML = `<span class="down">⚠️ تعذر التحديث: ${esc(e.message)}</span> — سنحاول مرة أخرى`;
@@ -240,22 +277,44 @@ function renderAll(isTick = false) {
   live.recentPatterns = detectPatterns(candles, { lookback: 30 });
   if (live.mtf) live.mtf[live.interval] = { rating: live.res.rating, at: Date.now() };
   renderChart(); renderPlan(); renderRating(); renderSignals(); renderPatterns(); renderLevels(); renderMTF();
-  const price = candles[candles.length - 1].c;
-  const dir = live.lastPrice == null ? '' : price > live.lastPrice ? 'up' : price < live.lastPrice ? 'down' : '';
-  live.lastPrice = price;
-  $('#liveStatus').innerHTML = `<b class="price-tick ${dir}">${esc(live.symbol)} ${fmt(price)} ${dir === 'up' ? '▲' : dir === 'down' ? '▼' : ''}</b> · ${esc(live.interval)} · المصدر: ${isBinanceSymbol(live.symbol) ? 'Binance' : 'Twelve Data'} · آخر تحديث ${new Date().toLocaleTimeString('ar-EG')}${isTick ? '' : ` · ${candles.length} شمعة`}`;
+  live.lastRenderAt = Date.now(); live.isTick = isTick;
+  renderPriceLine();
   renderBudget();
 }
 
-/** تنبيه رصيد Twelve Data عند التحديث السريع */
+/** سطر السعر والمصدر وحالة البث */
+function renderPriceLine() {
+  if (!live.candles) return;
+  const price = live.candles[live.candles.length - 1].c;
+  const dir = live.lastPrice == null ? '' : price > live.lastPrice ? 'up' : price < live.lastPrice ? 'down' : '';
+  if (price !== live.lastPrice) live.lastDir = dir || live.lastDir;
+  live.lastPrice = price;
+  const d = live.lastDir || '';
+  const src = streamSourceFor(live.symbol);
+  const streamTxt = live.stream ? ` · ${STREAM_LABEL[live.streamState] || ''}${src === 'tiingo' && live.source !== 'Tiingo' ? ' (Tiingo)' : ''}` : '';
+  $('#liveStatus').innerHTML = `<b class="price-tick ${d}">${esc(live.symbol)} ${fmt(price)} ${d === 'up' ? '▲' : d === 'down' ? '▼' : ''}</b> · ${esc(live.interval)} · الشموع من: ${esc(live.source || '—')}${streamTxt} · آخر تحليل ${new Date(live.lastRenderAt || Date.now()).toLocaleTimeString('ar-EG')}${live.sourceNote ? ` <span class="muted">(${esc(live.sourceNote)})</span>` : ''}`;
+}
+
+/** شرح تكلفة التحديث حسب المصدر */
 function renderBudget() {
   const box = $('#refreshNote');
   const sec = refreshSeconds();
-  if (!live.symbol || isBinanceSymbol(live.symbol) || !sec) { box.textContent = sec && live.symbol ? 'Binance: التحديث كل ' + sec + ' ثوانٍ مجاني وبلا حد يومي.' : ''; return; }
+  if (!live.symbol || !sec) { box.textContent = ''; return; }
+  const src = streamSourceFor(live.symbol);
+  if (src && live.streamState === 'live') {
+    box.innerHTML = `البث المباشر يعمل: الشمعة تتحرك لحظياً، والتحليل يُعاد كل ${sec} ثوانٍ — <b>بدون استهلاك أي طلبات</b>.`;
+    return;
+  }
+  if (isBinanceSymbol(live.symbol)) { box.textContent = `Binance: التحديث كل ${sec} ثوانٍ مجاني وبلا حد يومي.`; return; }
+  if (live.source === 'Tiingo') {
+    const u = tiingoUsage();
+    box.innerHTML = `Tiingo: بدون البث نحدّث كل 90 ثانية لحماية الحد (${u.hour}/${u.perHour} هذه الساعة · ${u.day}/${u.perDay} اليوم).`;
+    return;
+  }
   const left = tdPool.remainingToday();
   const perHour = Math.round(3600 / sec);
   const hours = perHour ? left / perHour : 0;
-  box.innerHTML = `Twelve Data: كل تحديث = طلب واحد (${perHour} طلب/ساعة). المتبقي اليوم لكل مفاتيحك: <b>${left}</b> طلب ≈ <b>${hours >= 1 ? hours.toFixed(1) + ' ساعة' : Math.round(hours * 60) + ' دقيقة'}</b> بهذا المعدل.${hours < 1 ? ' <span class="down">اختر 30 أو 60 ثانية لتوفير الرصيد.</span>' : ''}`;
+  box.innerHTML = `Twelve Data: كل تحديث = طلب واحد (${perHour} طلب/ساعة). المتبقي اليوم لكل مفاتيحك: <b>${left}</b> طلب ≈ <b>${hours >= 1 ? hours.toFixed(1) + ' ساعة' : Math.round(hours * 60) + ' دقيقة'}</b> بهذا المعدل.${hours < 1 ? ' <span class="down">اختر 30 أو 60 ثانية لتوفير الرصيد.</span>' : ''}${getTiingoKey() ? '' : ' 💡 أضف مفتاح Tiingo للبث المباشر المجاني.'}`;
 }
 
 /** التقييم على عدة فريمات */
@@ -443,8 +502,50 @@ function loadForexAndNews() {
   }).catch((e) => { $('#news').innerHTML = `<p class="muted">${esc(e.message)}</p>`; });
 }
 
+// ---- قائمة الفوركس عبر بث Tiingo المباشر ----
+const fxWatch = { ws: null, base: {}, last: {} };
+function stopFxWatch() { try { fxWatch.ws?.close(); } catch { /* ignore */ } fxWatch.ws = null; }
+
+function loadTiingoTickers() {
+  const box = $('#tdTickers');
+  const syms = tdWatchlist(2);
+  const names = Object.fromEntries(TD_SYMBOLS.map((x) => [x.s, x.n]));
+  const byTicker = Object.fromEntries(syms.map((s) => [toTiingoTicker(s), s]));
+  box.innerHTML = syms.map((s) => `
+    <div class="ticker" data-sym="${esc(s)}" data-tk="${toTiingoTicker(s)}" title="اضغط للتحليل">
+      <div class="sym">${esc(s)}</div><div class="name">${esc(names[s] || '')}</div>
+      <div class="price">—</div><div class="chg muted small">في انتظار البث...</div>
+    </div>`).join('') + '<p class="muted small" style="grid-column:1/-1">⚡ بث Tiingo المباشر — التغير محسوب منذ فتح الصفحة.</p>';
+  $$('.ticker', box).forEach((el) => (el.onclick = () => { $('#liveSymbol').value = el.dataset.sym; $$('.tab').find((t) => t.dataset.tab === 'live').click(); loadLive(); }));
+  const show = (tk, price) => {
+    const el = $(`.ticker[data-tk="${tk}"]`, box); if (!el) return;
+    if (fxWatch.base[tk] == null) fxWatch.base[tk] = price;
+    const prev = fxWatch.last[tk]; fxWatch.last[tk] = price;
+    const ch = ((price - fxWatch.base[tk]) / fxWatch.base[tk]) * 100;
+    $('.price', el).textContent = fmt(price);
+    $('.price', el).className = 'price ' + (prev == null ? '' : price > prev ? 'up' : price < prev ? 'down' : '');
+    $('.chg', el).className = 'chg small ' + (ch > 0 ? 'up' : ch < 0 ? 'down' : 'flat');
+    $('.chg', el).textContent = `${ch > 0 ? '▲' : ch < 0 ? '▼' : '●'} ${Math.abs(ch).toFixed(3)}%`;
+  };
+  // سعر أولي بطلب واحد (يعمل داخل تطبيق Android؛ في المتصفح ننتظر البث)
+  tiingoTop(syms).then((rows) => rows.forEach((r) => show(r.ticker, r.mid))).catch(() => {});
+  stopFxWatch();
+  try {
+    const ws = new WebSocket('wss://api.tiingo.com/fx');
+    fxWatch.ws = ws;
+    ws.onopen = () => ws.send(JSON.stringify({ eventName: 'subscribe', authorization: getTiingoKey(), eventData: { thresholdLevel: 5, tickers: Object.keys(byTicker) } }));
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      if (m.messageType === 'E' || m.response?.code >= 400) { box.insertAdjacentHTML('beforeend', '<p class="down small" style="grid-column:1/-1">مفتاح Tiingo مرفوض — تحقق منه في صفحة المفاتيح</p>'); stopFxWatch(); return; }
+      const q = parseQuote(m, (tk) => fxWatch.last[tk]);
+      if (q && byTicker[q.ticker]) show(q.ticker, q.price);
+    };
+  } catch { /* لا يوجد WebSocket */ }
+}
+
 function loadTDTickers() {
   const box = $('#tdTickers');
+  if (getTiingoKey()) return loadTiingoTickers();
   if (!getTwelveKeys().length) { box.innerHTML = '<p class="muted small">أضف مفتاح Twelve Data في صفحة "المفاتيح" لعرض أسعار الفوركس والذهب لحظياً.</p>'; return; }
   box.innerHTML = '<span class="spinner"></span>';
   const names = Object.fromEntries(TD_SYMBOLS.map((x) => [x.s, x.n]));
@@ -599,6 +700,16 @@ function initKeys() {
     };
   });
 
+  // ---- Tiingo ----
+  $('#tiingoKey').value = getTiingoKey();
+  $('#tiingoShow').onclick = () => { const k = $('#tiingoKey'); k.type = k.type === 'password' ? 'text' : 'password'; };
+  $('#tiingoTest').onclick = async () => {
+    const st = $('#tiingoStatus');
+    st.innerHTML = '<span class="spinner"></span> الاتصال ببث Tiingo...';
+    try { st.innerHTML = `<span class="up">${esc(await testTiingoKey($('#tiingoKey').value.trim()))}</span>`; }
+    catch (e) { st.innerHTML = `<span class="down">${esc(e.message)}</span>`; }
+  };
+
   const tdKeys = getTwelveKeys();
   $('#tdSlots').innerHTML = Array.from({ length: 4 }, (_, i) => `
     <div class="td-key" data-td="${i}">
@@ -620,20 +731,26 @@ function initKeys() {
 
   $('#saveKeys').onclick = () => {
     const all = $$('.slot[data-i]').map(readSlot);
-    const ok = saveSlots(all) && setTwelveKeys($$('.td-input').map((x) => x.value));
-    $('#keysMsg').textContent = ok ? `✓ تم الحفظ — ${all.filter((s) => s.key && s.enabled).length} مفتاح AI + ${getTwelveKeys().length} مفتاح Twelve Data` : '❌ المتصفح يمنع الحفظ (وضع التصفح الخاص؟) — ستعمل المفاتيح حتى إغلاق الصفحة';
+    const ok = saveSlots(all) && setTwelveKeys($$('.td-input').map((x) => x.value)) && setTiingoKey($('#tiingoKey').value);
+    $('#keysMsg').textContent = ok ? `✓ تم الحفظ — ${all.filter((s) => s.key && s.enabled).length} مفتاح AI${getTiingoKey() ? ' + Tiingo' : ''} + ${getTwelveKeys().length} مفتاح Twelve Data` : '❌ المتصفح يمنع الحفظ (وضع التصفح الخاص؟) — ستعمل المفاتيح حتى إغلاق الصفحة';
     updateKeysBadge();
   };
   $('#clearKeys').onclick = () => {
     if (!confirm('مسح كل المفاتيح؟')) return;
     saveSlots(Array.from({ length: SLOT_COUNT }, () => ({ key: '', provider: 'auto', model: '', enabled: true })));
     setTwelveKeys([]);
+    setTiingoKey('');
     initKeys(); updateKeysBadge();
   };
 }
 
 // عرض استهلاك رصيد كل مفتاح Twelve Data (يتحدث كل ثانيتين في صفحة المفاتيح)
 function renderTDUsage() {
+  const tu = $('#tiingoUsage');
+  if (tu && $('#tab-keys').classList.contains('active')) {
+    const u = tiingoUsage();
+    tu.textContent = getTiingoKey() ? `طلبات Tiingo (الشموع التاريخية): ${u.hour}/${u.perHour} هذه الساعة · ${u.day}/${u.perDay} اليوم — البث المباشر لا يُحسب` : '';
+  }
   const box = $('#tdUsage');
   if (!box || !$('#tab-keys').classList.contains('active')) return;
   const st = tdPool.status();
