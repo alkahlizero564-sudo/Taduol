@@ -170,6 +170,11 @@ td.num { direction: ltr; text-align: left; font-variant-numeric: tabular-nums; }
 .slot .status { font-size: .85rem; min-height: 1.3em; }
 .key-row { display: flex; gap: .4rem; }
 .help { margin-top: 1rem; }
+.td-slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: .6rem; margin-bottom: .6rem; }
+.td-slots label { margin-bottom: .3rem; }
+.usage-bar { display: inline-block; width: 70px; height: 6px; background: var(--border); border-radius: 99px; overflow: hidden; vertical-align: middle; margin: 0 .3rem; }
+.usage-bar i { display: block; height: 100%; background: var(--up); }
+.usage-bar i.hot { background: var(--warn); } .usage-bar i.full { background: var(--down); }
 
 .footer { text-align: center; color: var(--muted); font-size: .85rem; padding: 1rem 1rem 2rem; max-width: 900px; margin: 0 auto; }
 .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; }

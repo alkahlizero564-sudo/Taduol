@@ -60,38 +60,15 @@ export function normalizeTDSymbol(symbol) {
   return s;
 }
 
-// ----------------- Twelve Data -----------------
-const TD_KEY_STORE = 'taduol.twelvedata.v1';
-const TD_BASE = 'https://api.twelvedata.com';
+// ----------------- Twelve Data (حتى 4 مفاتيح عبر المنظِّم) -----------------
+import { pool, getTwelveKeys, setTwelveKeys, getTwelveKey, setTwelveKey } from './twelvedata.js';
+export { pool as tdPool, getTwelveKeys, setTwelveKeys, getTwelveKey, setTwelveKey };
+
 const TD_INTERVALS = { '1m': '1min', '5m': '5min', '15m': '15min', '30m': '30min', '1h': '1h', '4h': '4h', '1d': '1day', '1w': '1week' };
-
-export function getTwelveKey() {
-  try { return (globalThis.localStorage?.getItem(TD_KEY_STORE) || '').trim(); } catch { return ''; }
-}
-export function setTwelveKey(key) {
-  try { globalThis.localStorage?.setItem(TD_KEY_STORE, String(key || '').trim()); return true; } catch { return false; }
-}
-
-function tdError(j, httpStatus) {
-  const code = j?.code || httpStatus;
-  const msg = j?.message || '';
-  if (code === 401 || /api ?key/i.test(msg)) return new Error('مفتاح Twelve Data غير صالح');
-  if (code === 429) return new Error('تجاوزت حد Twelve Data (الخطة المجانية 8 طلبات/دقيقة و800/يوم) — انتظر دقيقة');
-  if (code === 404 || /symbol/i.test(msg)) return new Error('الرمز غير موجود في Twelve Data — جرب صيغة مثل EUR/USD أو XAU/USD');
-  return new Error('Twelve Data: ' + (msg || `HTTP ${code}`));
-}
-
-async function td(path, params, key = getTwelveKey()) {
-  if (!key) throw new Error('هذا الرمز يحتاج مفتاح Twelve Data — أضفه في صفحة "المفاتيح"');
-  const qs = new URLSearchParams({ ...params, apikey: key });
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 15000);
-  try {
-    const r = await fetch(`${TD_BASE}${path}?${qs}`, { signal: ctl.signal });
-    const j = await r.json().catch(() => ({}));
-    if (!r.ok || j.status === 'error') throw tdError(j, r.status);
-    return j;
-  } finally { clearTimeout(t); }
+// رموز إضافية تظهر في قائمة المراقبة عند وجود مفتاحين أو أكثر
+export const TD_WATCHLIST_EXTRA = ['XAG/USD', 'USD/CHF', 'NZD/USD', 'EUR/GBP', 'GBP/JPY', 'EUR/JPY'];
+export function tdWatchlist(keyCount = getTwelveKeys().length) {
+  return keyCount >= 2 ? [...TD_WATCHLIST, ...TD_WATCHLIST_EXTRA] : TD_WATCHLIST;
 }
 
 /** تحويل رد time_series إلى شموع مرتبة من الأقدم للأحدث */
@@ -103,34 +80,43 @@ export function parseTDSeries(j) {
   })).filter((k) => isFinite(k.o) && isFinite(k.c)).reverse();
 }
 
-export async function tdCandles(symbol, interval = '1h', limit = 300, key) {
+/**
+ * @param {{onWait?:(sec:number)=>void}} opts  يُستدعى عندما ينتظر المنظِّم توفر رصيد
+ */
+export async function tdCandles(symbol, interval = '1h', limit = 300, opts = {}) {
   const iv = TD_INTERVALS[interval];
   if (!iv) throw new Error('فريم غير مدعوم: ' + interval);
-  const j = await td('/time_series', { symbol: normalizeTDSymbol(symbol), interval: iv, outputsize: String(Math.min(limit, 5000)), timezone: 'UTC' }, key);
+  const sym = normalizeTDSymbol(symbol);
+  const size = String(Math.min(limit, 5000));
+  const j = await pool.request('/time_series', { symbol: sym, interval: iv, outputsize: size, timezone: 'UTC' },
+    { cost: 1, cacheKey: `ts|${sym}|${iv}|${size}`, onWait: opts.onWait });
   const candles = parseTDSeries(j);
   if (!candles.length) throw new Error('لا توجد بيانات لهذا الرمز/الفريم');
   return candles;
 }
 
-/** أسعار لحظية لعدة رموز (كل رمز = طلب واحد من الرصيد) */
-export async function tdQuotes(symbols = TD_WATCHLIST, key) {
-  const j = await td('/quote', { symbol: symbols.join(',') }, key);
-  const list = symbols.length === 1 ? [j] : symbols.map((s) => j[s]).filter(Boolean);
-  return list.filter((q) => q && q.status !== 'error' && q.close != null).map((q) => ({
-    symbol: q.symbol, name: q.name, price: +q.close, change: +q.percent_change, high: +q.high, low: +q.low, closed: q.is_market_open === false,
-  }));
+const mapQuote = (q) => ({
+  symbol: q.symbol, name: q.name, price: +q.close, change: +q.percent_change, high: +q.high, low: +q.low, closed: q.is_market_open === false,
+});
+const okQuote = (q) => q && q.status !== 'error' && q.close != null;
+
+/** أسعار لحظية لعدة رموز (كل رمز = طلب واحد من الرصيد، موزعة على المفاتيح) */
+export async function tdQuotes(symbols = tdWatchlist(), opts = {}) {
+  const map = await pool.quotes(symbols, opts);
+  return symbols.map((s) => map[s]).filter(okQuote).map(mapQuote);
 }
 
-/** اختبار المفتاح */
+/** اختبار مفتاح محدد مباشرة (لا يمر بالمنظِّم) */
 export async function testTwelveKey(key) {
-  const q = await tdQuotes(['EUR/USD'], key);
-  if (!q.length) throw new Error('رد غير متوقع من Twelve Data');
-  return `Twelve Data ✓ — EUR/USD = ${q[0].price}`;
+  if (!key) throw new Error('اكتب المفتاح أولاً');
+  const q = await pool.request('/quote', { symbol: 'EUR/USD' }, { key });
+  if (!okQuote(q)) throw new Error('رد غير متوقع من Twelve Data');
+  return `✓ يعمل — EUR/USD = ${q.close}`;
 }
 
 /** شموع: Binance للعملات الرقمية، و Twelve Data للفوركس والذهب والأسهم */
-export async function getCandles(symbol = 'BTCUSDT', interval = '1h', limit = 300) {
-  if (!isBinanceSymbol(symbol)) return tdCandles(symbol, interval, limit);
+export async function getCandles(symbol = 'BTCUSDT', interval = '1h', limit = 300, opts = {}) {
+  if (!isBinanceSymbol(symbol)) return tdCandles(symbol, interval, limit, opts);
   const data = await binance(`/api/v3/klines?symbol=${encodeURIComponent(symbol.toUpperCase())}&interval=${interval}&limit=${limit}`);
   return data.map((r) => ({ t: r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5] }));
 }

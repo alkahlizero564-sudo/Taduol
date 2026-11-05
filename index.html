@@ -187,10 +187,11 @@
           <h4>📡 Twelve Data — بيانات حية للفوركس والذهب والأسهم</h4>
           <p class="muted small">مطلوب لشموع EUR/USD و XAU/USD و AAPL وغيرها. العملات الرقمية (مثل BTCUSDT) تعمل من Binance بدون مفتاح.
             الخطة المجانية: 8 طلبات في الدقيقة و800 في اليوم.</p>
-          <label>مفتاح Twelve Data
-            <div class="key-row"><input id="tdKey" type="password" autocomplete="off" spellcheck="false" dir="ltr" placeholder="مفتاح Twelve Data" />
-            <button class="btn" id="tdShow" type="button" title="إظهار/إخفاء">👁</button></div></label>
-          <div class="key-row"><button class="btn" id="tdTest" type="button">🧪 اختبار</button><div id="tdStatus" class="status muted"></div></div>
+          <p class="muted small">يمكنك إضافة حتى 4 مفاتيح: التطبيق يوزع الطلبات بينها، وينتظر تلقائياً عند امتلاء الرصيد بدل إظهار خطأ،
+            ويحفظ النتائج لمدة دقيقة حتى لا يُحسب نفس الطلب مرتين.
+            <b>تنبيه:</b> استخدم فقط مفاتيح من حسابات يحق لك استخدامها — فتح عدة حسابات مجانية لنفس الشخص قد يخالف شروط Twelve Data.</p>
+          <div id="tdSlots" class="td-slots"></div>
+          <div id="tdUsage" class="small muted"></div>
         </div>
         <details class="help">
           <summary>كيف أحصل على مفتاح؟</summary>

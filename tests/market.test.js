@@ -20,7 +20,7 @@ function mockFetch(handler) {
     return { ok: status >= 200 && status < 300, status, json: async () => body };
   };
 }
-beforeEach(() => mem.clear());
+beforeEach(() => { mem.clear(); m.setTwelveKeys([]); m.tdPool.cache.clear(); });
 
 test('symbol routing: crypto → Binance, everything else → Twelve Data', () => {
   assert.equal(m.isBinanceSymbol('BTCUSDT'), true);
@@ -75,8 +75,11 @@ test('Twelve Data errors are translated (invalid key, rate limit)', async () => 
   m.setTwelveKey('bad');
   mockFetch(() => ({ body: { status: 'error', code: 401, message: '**apikey** parameter is incorrect' } }));
   await assert.rejects(() => m.tdCandles('EUR/USD', '1h'), /غير صالح/);
+  m.setTwelveKey('limited');
+  m.tdPool.maxWaitMs = 0; // لا ننتظر في الاختبار
   mockFetch(() => ({ status: 429, body: { status: 'error', code: 429, message: 'You have run out of API credits' } }));
-  await assert.rejects(() => m.tdCandles('EUR/USD', '1h'), /حد Twelve Data/);
+  await assert.rejects(() => m.tdCandles('EUR/USD', '1h'), /انتهى رصيد/);
+  m.tdPool.maxWaitMs = 70000;
 });
 
 test('tdQuotes parses single and batch responses', async () => {

@@ -3,7 +3,7 @@
 // =====================================================================
 import { PATTERNS, PATTERN_MAP, detectPatterns } from './patterns.js';
 import { analyze, summaryForAI, fmt } from './analysis.js';
-import { getCandles, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, TD_WATCHLIST, tdQuotes, getTwelveKey, setTwelveKey, testTwelveKey, isBinanceSymbol, normalizeTDSymbol } from './market.js';
+import { getCandles, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, tdWatchlist, tdQuotes, getTwelveKeys, setTwelveKeys, testTwelveKey, tdPool, isBinanceSymbol, normalizeTDSymbol } from './market.js';
 import {
   loadSlots, saveSlots, resolveSlot, activeSlots, detectProvider, testSlot, SLOT_COUNT,
   CLAUDE_MODELS, GEMINI_MODELS, analyzeChartImage, fileToBase64, aiMarketNews,
@@ -61,7 +61,7 @@ function fillSelectors() {
 function updateKeysBadge() {
   const n = activeSlots().length;
   const b = $('#keysBadge');
-  b.textContent = (n ? `${n} مفتاح AI` : 'لا توجد مفاتيح') + (getTwelveKey() ? ' · Twelve Data ✓' : '');
+  b.textContent = (n ? `${n} مفتاح AI` : 'لا توجد مفاتيح') + (getTwelveKeys().length ? ` · Twelve Data ×${getTwelveKeys().length}` : '');
   b.classList.toggle('ok', n > 0);
 }
 
@@ -104,7 +104,7 @@ async function runImageAnalysis() {
       say('جلب بيانات السوق الحية لـ ' + sym + '...');
       try {
         const iv = $('#imgInterval').value;
-        const candles = await getCandles(sym, iv, 300);
+        const candles = await getCandles(sym, iv, 300, { onWait: (sec) => say(`انتظار ${sec} ثانية لتوفر رصيد Twelve Data...`) });
         const res = analyze(candles);
         liveContext = summaryForAI(res, sym, iv) + '\nأنماط الشموع الأخيرة: ' + res.patterns.map((p) => p.en).join(', ');
       } catch (e) { say('تعذر جلب البيانات الحية (' + e.message + ') — سنحلل الصورة فقط'); }
@@ -183,7 +183,7 @@ async function loadLive(silent = false) {
   const st = $('#liveStatus');
   if (!silent) st.innerHTML = '<span class="spinner"></span> جاري جلب البيانات...';
   try {
-    const candles = await getCandles(sym, iv, 300);
+    const candles = await getCandles(sym, iv, 300, { onWait: (sec) => { st.innerHTML = `<span class="spinner"></span> تم استهلاك رصيد الدقيقة — انتظار ${sec} ثانية ثم المتابعة تلقائياً...`; } });
     live.candles = candles; live.symbol = sym; live.interval = iv;
     live.res = analyze(candles);
     live.recentPatterns = detectPatterns(candles, { lookback: 30 });
@@ -303,10 +303,10 @@ async function loadMarkets() {
 
 function loadTDTickers() {
   const box = $('#tdTickers');
-  if (!getTwelveKey()) { box.innerHTML = '<p class="muted small">أضف مفتاح Twelve Data في صفحة "المفاتيح" لعرض أسعار الفوركس والذهب لحظياً.</p>'; return; }
+  if (!getTwelveKeys().length) { box.innerHTML = '<p class="muted small">أضف مفتاح Twelve Data في صفحة "المفاتيح" لعرض أسعار الفوركس والذهب لحظياً.</p>'; return; }
   box.innerHTML = '<span class="spinner"></span>';
   const names = Object.fromEntries(TD_SYMBOLS.map((x) => [x.s, x.n]));
-  tdQuotes(TD_WATCHLIST).then((rows) => {
+  tdQuotes(tdWatchlist(), { onWait: (sec) => { box.innerHTML = `<p class="muted small"><span class="spinner"></span> انتظار ${sec} ثانية لتوفر الرصيد...</p>`; } }).then((rows) => {
     box.innerHTML = rows.map((t) => `
       <div class="ticker" data-sym="${esc(t.symbol)}" title="اضغط للتحليل">
         <div class="sym">${esc(t.symbol)}</div><div class="name">${esc(names[t.symbol] || t.name || '')}${t.closed ? ' · السوق مغلق' : ''}</div>
@@ -418,28 +418,55 @@ function initKeys() {
     };
   });
 
-  $('#tdKey').value = getTwelveKey();
-  $('#tdShow').onclick = () => { const k = $('#tdKey'); k.type = k.type === 'password' ? 'text' : 'password'; };
-  $('#tdTest').onclick = async () => {
-    const st = $('#tdStatus');
-    st.innerHTML = '<span class="spinner"></span>';
-    try { st.innerHTML = `<span class="up">${esc(await testTwelveKey($('#tdKey').value.trim()))}</span>`; }
-    catch (e) { st.innerHTML = `<span class="down">${esc(e.message)}</span>`; }
-  };
+  const tdKeys = getTwelveKeys();
+  $('#tdSlots').innerHTML = Array.from({ length: 4 }, (_, i) => `
+    <div class="td-key" data-td="${i}">
+      <label>مفتاح Twelve Data ${i + 1}
+        <div class="key-row"><input class="td-input" type="password" autocomplete="off" spellcheck="false" dir="ltr" value="${esc(tdKeys[i] || '')}" placeholder="${i ? 'اختياري' : 'المفتاح الأساسي'}" />
+        <button class="btn td-show" type="button" title="إظهار/إخفاء">👁</button>
+        <button class="btn td-test" type="button" title="اختبار">🧪</button></div></label>
+      <div class="status small td-status"></div>
+    </div>`).join('');
+  $$('.td-key').forEach((el) => {
+    $('.td-show', el).onclick = () => { const k = $('.td-input', el); k.type = k.type === 'password' ? 'text' : 'password'; };
+    $('.td-test', el).onclick = async () => {
+      const st = $('.td-status', el);
+      st.innerHTML = '<span class="spinner"></span>';
+      try { st.innerHTML = `<span class="up">${esc(await testTwelveKey($('.td-input', el).value.trim()))}</span>`; }
+      catch (e) { st.innerHTML = `<span class="down">${esc(e.message)}</span>`; }
+    };
+  });
 
   $('#saveKeys').onclick = () => {
     const all = $$('.slot[data-i]').map(readSlot);
-    const ok = saveSlots(all) && setTwelveKey($('#tdKey').value);
-    $('#keysMsg').textContent = ok ? `✓ تم الحفظ — ${all.filter((s) => s.key && s.enabled).length} مفتاح AI${getTwelveKey() ? ' + Twelve Data' : ''}` : '❌ المتصفح يمنع الحفظ (وضع التصفح الخاص؟) — ستعمل المفاتيح حتى إغلاق الصفحة';
+    const ok = saveSlots(all) && setTwelveKeys($$('.td-input').map((x) => x.value));
+    $('#keysMsg').textContent = ok ? `✓ تم الحفظ — ${all.filter((s) => s.key && s.enabled).length} مفتاح AI + ${getTwelveKeys().length} مفتاح Twelve Data` : '❌ المتصفح يمنع الحفظ (وضع التصفح الخاص؟) — ستعمل المفاتيح حتى إغلاق الصفحة';
     updateKeysBadge();
   };
   $('#clearKeys').onclick = () => {
     if (!confirm('مسح كل المفاتيح؟')) return;
     saveSlots(Array.from({ length: SLOT_COUNT }, () => ({ key: '', provider: 'auto', model: '', enabled: true })));
-    setTwelveKey('');
+    setTwelveKeys([]);
     initKeys(); updateKeysBadge();
   };
 }
+
+// عرض استهلاك رصيد كل مفتاح Twelve Data (يتحدث كل ثانيتين في صفحة المفاتيح)
+function renderTDUsage() {
+  const box = $('#tdUsage');
+  if (!box || !$('#tab-keys').classList.contains('active')) return;
+  const st = tdPool.status();
+  if (!st.length) { box.textContent = ''; return; }
+  box.innerHTML = 'استهلاك هذه الدقيقة: ' + st.map((s) => {
+    const pct = Math.round((s.used / s.perMinute) * 100);
+    const label = s.state === 'invalid' ? '<span class="down">غير صالح</span>'
+      : s.state === 'daily' ? '<span class="down">انتهى رصيد اليوم</span>'
+      : s.state === 'minute' ? `<span class="down">متوقف ${Math.ceil(s.waitMs / 1000)}ث</span>`
+      : `${s.used}/${s.perMinute}`;
+    return `مفتاح ${s.slot} <span class="usage-bar"><i class="${pct >= 100 ? 'full' : pct >= 60 ? 'hot' : ''}" style="width:${Math.min(100, pct)}%"></i></span>${label}`;
+  }).join(' &nbsp;·&nbsp; ');
+}
+setInterval(renderTDUsage, 2000);
 
 function readSlot(el) {
   const model = $('.s-model', el).value;
