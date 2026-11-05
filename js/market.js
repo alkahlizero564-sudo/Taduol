@@ -35,8 +35,102 @@ export const SYMBOLS = [
   { s: 'TONUSDT', n: 'تون' }, { s: 'LTCUSDT', n: 'لايتكوين' }, { s: 'DOTUSDT', n: 'بولكادوت' },
 ];
 
-/** شموع من Binance */
+// رموز Twelve Data (فوركس، معادن، أسهم) — تحتاج مفتاح Twelve Data
+export const TD_SYMBOLS = [
+  { s: 'EUR/USD', n: 'يورو/دولار' }, { s: 'GBP/USD', n: 'باوند/دولار' }, { s: 'USD/JPY', n: 'دولار/ين' },
+  { s: 'USD/CHF', n: 'دولار/فرنك' }, { s: 'AUD/USD', n: 'أسترالي/دولار' }, { s: 'USD/CAD', n: 'دولار/كندي' },
+  { s: 'NZD/USD', n: 'نيوزيلندي/دولار' }, { s: 'EUR/GBP', n: 'يورو/باوند' }, { s: 'GBP/JPY', n: 'باوند/ين' },
+  { s: 'XAU/USD', n: 'الذهب' }, { s: 'XAG/USD', n: 'الفضة' },
+  { s: 'AAPL', n: 'أبل' }, { s: 'TSLA', n: 'تسلا' }, { s: 'NVDA', n: 'إنفيديا' },
+];
+// قائمة المراقبة في صفحة الأسواق — 6 رموز فقط لأن الخطة المجانية 8 طلبات في الدقيقة
+export const TD_WATCHLIST = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'XAU/USD', 'AUD/USD', 'USD/CAD'];
+
+/** هل الرمز عملة رقمية على Binance؟ (مثل BTCUSDT) وإلا يذهب إلى Twelve Data */
+export function isBinanceSymbol(symbol) {
+  const s = String(symbol || '').trim().toUpperCase();
+  return !s.includes('/') && /^[A-Z0-9]{2,}(USDT|USDC|FDUSD|BTC|ETH|BNB)$/.test(s);
+}
+
+/** توحيد كتابة الرمز لـ Twelve Data: EURUSD → EUR/USD ، xauusd → XAU/USD */
+export function normalizeTDSymbol(symbol) {
+  const s = String(symbol || '').trim().toUpperCase().replace(/\s+/g, '');
+  if (s.includes('/')) return s;
+  if (/^(EUR|GBP|USD|JPY|CHF|AUD|CAD|NZD|XAU|XAG|CNY|TRY|SEK|NOK)[A-Z]{3}$/.test(s)) return s.slice(0, 3) + '/' + s.slice(3);
+  return s;
+}
+
+// ----------------- Twelve Data -----------------
+const TD_KEY_STORE = 'taduol.twelvedata.v1';
+const TD_BASE = 'https://api.twelvedata.com';
+const TD_INTERVALS = { '1m': '1min', '5m': '5min', '15m': '15min', '30m': '30min', '1h': '1h', '4h': '4h', '1d': '1day', '1w': '1week' };
+
+export function getTwelveKey() {
+  try { return (globalThis.localStorage?.getItem(TD_KEY_STORE) || '').trim(); } catch { return ''; }
+}
+export function setTwelveKey(key) {
+  try { globalThis.localStorage?.setItem(TD_KEY_STORE, String(key || '').trim()); return true; } catch { return false; }
+}
+
+function tdError(j, httpStatus) {
+  const code = j?.code || httpStatus;
+  const msg = j?.message || '';
+  if (code === 401 || /api ?key/i.test(msg)) return new Error('مفتاح Twelve Data غير صالح');
+  if (code === 429) return new Error('تجاوزت حد Twelve Data (الخطة المجانية 8 طلبات/دقيقة و800/يوم) — انتظر دقيقة');
+  if (code === 404 || /symbol/i.test(msg)) return new Error('الرمز غير موجود في Twelve Data — جرب صيغة مثل EUR/USD أو XAU/USD');
+  return new Error('Twelve Data: ' + (msg || `HTTP ${code}`));
+}
+
+async function td(path, params, key = getTwelveKey()) {
+  if (!key) throw new Error('هذا الرمز يحتاج مفتاح Twelve Data — أضفه في صفحة "المفاتيح"');
+  const qs = new URLSearchParams({ ...params, apikey: key });
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 15000);
+  try {
+    const r = await fetch(`${TD_BASE}${path}?${qs}`, { signal: ctl.signal });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.status === 'error') throw tdError(j, r.status);
+    return j;
+  } finally { clearTimeout(t); }
+}
+
+/** تحويل رد time_series إلى شموع مرتبة من الأقدم للأحدث */
+export function parseTDSeries(j) {
+  const vals = Array.isArray(j?.values) ? j.values : [];
+  return vals.map((v) => ({
+    t: Date.parse(v.datetime.replace(' ', 'T') + (v.datetime.length > 10 ? 'Z' : 'T00:00:00Z')),
+    o: +v.open, h: +v.high, l: +v.low, c: +v.close, v: v.volume != null ? +v.volume : 0,
+  })).filter((k) => isFinite(k.o) && isFinite(k.c)).reverse();
+}
+
+export async function tdCandles(symbol, interval = '1h', limit = 300, key) {
+  const iv = TD_INTERVALS[interval];
+  if (!iv) throw new Error('فريم غير مدعوم: ' + interval);
+  const j = await td('/time_series', { symbol: normalizeTDSymbol(symbol), interval: iv, outputsize: String(Math.min(limit, 5000)), timezone: 'UTC' }, key);
+  const candles = parseTDSeries(j);
+  if (!candles.length) throw new Error('لا توجد بيانات لهذا الرمز/الفريم');
+  return candles;
+}
+
+/** أسعار لحظية لعدة رموز (كل رمز = طلب واحد من الرصيد) */
+export async function tdQuotes(symbols = TD_WATCHLIST, key) {
+  const j = await td('/quote', { symbol: symbols.join(',') }, key);
+  const list = symbols.length === 1 ? [j] : symbols.map((s) => j[s]).filter(Boolean);
+  return list.filter((q) => q && q.status !== 'error' && q.close != null).map((q) => ({
+    symbol: q.symbol, name: q.name, price: +q.close, change: +q.percent_change, high: +q.high, low: +q.low, closed: q.is_market_open === false,
+  }));
+}
+
+/** اختبار المفتاح */
+export async function testTwelveKey(key) {
+  const q = await tdQuotes(['EUR/USD'], key);
+  if (!q.length) throw new Error('رد غير متوقع من Twelve Data');
+  return `Twelve Data ✓ — EUR/USD = ${q[0].price}`;
+}
+
+/** شموع: Binance للعملات الرقمية، و Twelve Data للفوركس والذهب والأسهم */
 export async function getCandles(symbol = 'BTCUSDT', interval = '1h', limit = 300) {
+  if (!isBinanceSymbol(symbol)) return tdCandles(symbol, interval, limit);
   const data = await binance(`/api/v3/klines?symbol=${encodeURIComponent(symbol.toUpperCase())}&interval=${interval}&limit=${limit}`);
   return data.map((r) => ({ t: r[0], o: +r[1], h: +r[2], l: +r[3], c: +r[4], v: +r[5] }));
 }

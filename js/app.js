@@ -3,7 +3,7 @@
 // =====================================================================
 import { PATTERNS, PATTERN_MAP, detectPatterns } from './patterns.js';
 import { analyze, summaryForAI, fmt } from './analysis.js';
-import { getCandles, getTickers, getForex, getNews, SYMBOLS, INTERVALS } from './market.js';
+import { getCandles, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, TD_WATCHLIST, tdQuotes, getTwelveKey, setTwelveKey, testTwelveKey, isBinanceSymbol, normalizeTDSymbol } from './market.js';
 import {
   loadSlots, saveSlots, resolveSlot, activeSlots, detectProvider, testSlot, SLOT_COUNT,
   CLAUDE_MODELS, GEMINI_MODELS, analyzeChartImage, fileToBase64, aiMarketNews,
@@ -55,13 +55,13 @@ function fillSelectors() {
   for (const id of ['#imgInterval', '#liveInterval']) {
     $(id).innerHTML = INTERVALS.map((i) => `<option ${i === '1h' ? 'selected' : ''}>${i}</option>`).join('');
   }
-  $('#symbolList').innerHTML = SYMBOLS.map((s) => `<option value="${s.s}">${esc(s.n)}</option>`).join('');
+  $('#symbolList').innerHTML = [...SYMBOLS, ...TD_SYMBOLS].map((s) => `<option value="${s.s}">${esc(s.n)}</option>`).join('');
 }
 
 function updateKeysBadge() {
   const n = activeSlots().length;
   const b = $('#keysBadge');
-  b.textContent = n ? `${n} مفتاح نشط` : 'لا توجد مفاتيح';
+  b.textContent = (n ? `${n} مفتاح AI` : 'لا توجد مفاتيح') + (getTwelveKey() ? ' · Twelve Data ✓' : '');
   b.classList.toggle('ok', n > 0);
 }
 
@@ -177,7 +177,8 @@ function initLive() {
 }
 
 async function loadLive(silent = false) {
-  const sym = $('#liveSymbol').value.trim().toUpperCase();
+  const raw = $('#liveSymbol').value.trim().toUpperCase();
+  const sym = isBinanceSymbol(raw) ? raw : normalizeTDSymbol(raw);
   const iv = $('#liveInterval').value;
   const st = $('#liveStatus');
   if (!silent) st.innerHTML = '<span class="spinner"></span> جاري جلب البيانات...';
@@ -187,9 +188,9 @@ async function loadLive(silent = false) {
     live.res = analyze(candles);
     live.recentPatterns = detectPatterns(candles, { lookback: 30 });
     renderChart(); renderPlan(); renderSignals(); renderPatterns(); renderLevels();
-    st.textContent = `${sym} · ${iv} · آخر تحديث ${new Date().toLocaleTimeString('ar-EG')} · ${candles.length} شمعة`;
+    st.textContent = `${sym} · ${iv} · المصدر: ${isBinanceSymbol(sym) ? 'Binance' : 'Twelve Data'} · آخر تحديث ${new Date().toLocaleTimeString('ar-EG')} · ${candles.length} شمعة`;
   } catch (e) {
-    st.innerHTML = `<span class="down">❌ ${esc(e.message)}</span> — تأكد أن الرمز صحيح على Binance (مثل BTCUSDT).`;
+    st.innerHTML = `<span class="down">❌ ${esc(e.message)}</span> — ${isBinanceSymbol(sym) ? 'تأكد أن الرمز صحيح على Binance (مثل BTCUSDT).' : 'للفوركس والذهب استخدم صيغة مثل EUR/USD أو XAU/USD.'}`;
   }
 }
 
@@ -285,6 +286,8 @@ async function loadMarkets() {
     $$('.ticker').forEach((el) => (el.onclick = () => { $('#liveSymbol').value = el.dataset.sym; $$('.tab').find((t) => t.dataset.tab === 'live').click(); loadLive(); }));
   }).catch((e) => { $('#tickers').innerHTML = `<p class="down">❌ ${esc(e.message)}</p>`; });
 
+  loadTDTickers();
+
   getForex().then((fx) => {
     $('#forex').innerHTML = `<table><thead><tr><th>العملة</th><th>مقابل 1$</th><th>التغير</th></tr></thead><tbody>${
       fx.rows.map((r) => `<tr><td><b>${r.code}</b> ${esc(r.name)}</td><td class="num">${r.perUsd.toFixed(4)}</td><td class="${r.change > 0 ? 'up' : r.change < 0 ? 'down' : 'flat'}">${r.change > 0 ? '▲ ارتفعت' : r.change < 0 ? '▼ انخفضت' : '● ثابتة'} ${Math.abs(r.change).toFixed(2)}%</td></tr>`).join('')
@@ -296,6 +299,22 @@ async function loadMarkets() {
       <div class="news-item"><a href="${esc(n.url)}" target="_blank" rel="noopener noreferrer">${esc(n.title)}</a>
       <div class="small muted">${esc(n.source)} · ${n.time ? new Date(n.time).toLocaleString('ar-EG') : ''}</div></div>`).join('');
   }).catch((e) => { $('#news').innerHTML = `<p class="muted">${esc(e.message)}</p>`; });
+}
+
+function loadTDTickers() {
+  const box = $('#tdTickers');
+  if (!getTwelveKey()) { box.innerHTML = '<p class="muted small">أضف مفتاح Twelve Data في صفحة "المفاتيح" لعرض أسعار الفوركس والذهب لحظياً.</p>'; return; }
+  box.innerHTML = '<span class="spinner"></span>';
+  const names = Object.fromEntries(TD_SYMBOLS.map((x) => [x.s, x.n]));
+  tdQuotes(TD_WATCHLIST).then((rows) => {
+    box.innerHTML = rows.map((t) => `
+      <div class="ticker" data-sym="${esc(t.symbol)}" title="اضغط للتحليل">
+        <div class="sym">${esc(t.symbol)}</div><div class="name">${esc(names[t.symbol] || t.name || '')}${t.closed ? ' · السوق مغلق' : ''}</div>
+        <div class="price">${fmt(t.price)}</div>
+        <div class="${t.change >= 0 ? 'up' : 'down'}">${t.change >= 0 ? '▲ ارتفع' : '▼ انخفض'} ${Math.abs(t.change).toFixed(2)}%</div>
+      </div>`).join('') || '<p class="muted">لا توجد بيانات</p>';
+    $$('.ticker', box).forEach((el) => (el.onclick = () => { $('#liveSymbol').value = el.dataset.sym; $$('.tab').find((t) => t.dataset.tab === 'live').click(); loadLive(); }));
+  }).catch((e) => { box.innerHTML = `<p class="down">❌ ${esc(e.message)}</p>`; });
 }
 
 async function runAINews() {
@@ -374,7 +393,7 @@ function initKeys() {
       <div class="key-row"><button class="btn s-test" type="button">🧪 اختبار</button><div class="status muted"></div></div>
     </div>`).join('');
 
-  $$('.slot').forEach((el) => {
+  $$('.slot[data-i]').forEach((el) => {
     const refreshModels = () => {
       const prov = $('.s-provider', el).value;
       const p = prov === 'auto' ? detectProvider($('.s-key', el).value) : prov;
@@ -399,15 +418,25 @@ function initKeys() {
     };
   });
 
+  $('#tdKey').value = getTwelveKey();
+  $('#tdShow').onclick = () => { const k = $('#tdKey'); k.type = k.type === 'password' ? 'text' : 'password'; };
+  $('#tdTest').onclick = async () => {
+    const st = $('#tdStatus');
+    st.innerHTML = '<span class="spinner"></span>';
+    try { st.innerHTML = `<span class="up">${esc(await testTwelveKey($('#tdKey').value.trim()))}</span>`; }
+    catch (e) { st.innerHTML = `<span class="down">${esc(e.message)}</span>`; }
+  };
+
   $('#saveKeys').onclick = () => {
-    const all = $$('.slot').map(readSlot);
-    const ok = saveSlots(all);
-    $('#keysMsg').textContent = ok ? `✓ تم الحفظ — ${all.filter((s) => s.key && s.enabled).length} مفتاح نشط` : '❌ المتصفح يمنع الحفظ (وضع التصفح الخاص؟) — ستعمل المفاتيح حتى إغلاق الصفحة';
+    const all = $$('.slot[data-i]').map(readSlot);
+    const ok = saveSlots(all) && setTwelveKey($('#tdKey').value);
+    $('#keysMsg').textContent = ok ? `✓ تم الحفظ — ${all.filter((s) => s.key && s.enabled).length} مفتاح AI${getTwelveKey() ? ' + Twelve Data' : ''}` : '❌ المتصفح يمنع الحفظ (وضع التصفح الخاص؟) — ستعمل المفاتيح حتى إغلاق الصفحة';
     updateKeysBadge();
   };
   $('#clearKeys').onclick = () => {
     if (!confirm('مسح كل المفاتيح؟')) return;
     saveSlots(Array.from({ length: SLOT_COUNT }, () => ({ key: '', provider: 'auto', model: '', enabled: true })));
+    setTwelveKey('');
     initKeys(); updateKeysBadge();
   };
 }

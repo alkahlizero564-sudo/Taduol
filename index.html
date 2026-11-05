@@ -79,7 +79,7 @@
       <div class="card">
         <div class="toolbar">
           <label>الأصل
-            <input id="liveSymbol" list="symbolList" value="BTCUSDT" />
+            <input id="liveSymbol" list="symbolList" value="BTCUSDT" placeholder="BTCUSDT أو EUR/USD أو XAU/USD" />
           </label>
           <label>الفريم
             <select id="liveInterval"></select>
@@ -125,7 +125,10 @@
           <h2 class="grow">الأسواق العالمية الآن</h2>
           <button id="refreshMarkets" class="btn">🔄 تحديث</button>
         </div>
+        <h3>العملات الرقمية (Binance)</h3>
         <div id="tickers" class="tickers"></div>
+        <h3 style="margin-top:1rem">الفوركس والذهب لحظياً (Twelve Data)</h3>
+        <div id="tdTickers" class="tickers"></div>
       </div>
       <div class="grid-2">
         <div class="card">
@@ -180,11 +183,21 @@
           <button id="clearKeys" class="btn danger">🗑️ مسح الكل</button>
           <span id="keysMsg" class="muted"></span>
         </div>
+        <div class="slot td-slot">
+          <h4>📡 Twelve Data — بيانات حية للفوركس والذهب والأسهم</h4>
+          <p class="muted small">مطلوب لشموع EUR/USD و XAU/USD و AAPL وغيرها. العملات الرقمية (مثل BTCUSDT) تعمل من Binance بدون مفتاح.
+            الخطة المجانية: 8 طلبات في الدقيقة و800 في اليوم.</p>
+          <label>مفتاح Twelve Data
+            <div class="key-row"><input id="tdKey" type="password" autocomplete="off" spellcheck="false" dir="ltr" placeholder="مفتاح Twelve Data" />
+            <button class="btn" id="tdShow" type="button" title="إظهار/إخفاء">👁</button></div></label>
+          <div class="key-row"><button class="btn" id="tdTest" type="button">🧪 اختبار</button><div id="tdStatus" class="status muted"></div></div>
+        </div>
         <details class="help">
           <summary>كيف أحصل على مفتاح؟</summary>
           <ul>
             <li><b>Gemini:</b> من Google AI Studio ← Get API key (يوجد استخدام مجاني).</li>
             <li><b>Claude:</b> من Anthropic Console ← API Keys.</li>
+            <li><b>Twelve Data:</b> من twelvedata.com ← Dashboard ← API Keys (يوجد مفتاح مجاني).</li>
             <li>للحماية: استخدم مفاتيح بحدود إنفاق منخفضة، ولا تستخدم التطبيق على جهاز مشترك.</li>
           </ul>
         </details>
