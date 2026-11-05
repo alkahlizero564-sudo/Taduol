@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>تداول — محلل الشموع اليابانية</title>
+  <meta name="description" content="محلل الشموع اليابانية بالذكاء الاصطناعي: ارفع صورة الشارت واحصل على نقطة الدخول ووقف الخسارة والأهداف" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">🕯️</span>
+      <div>
+        <h1>تداول</h1>
+        <small>محلل الشموع اليابانية بالذكاء الاصطناعي</small>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span id="keysBadge" class="badge">0 مفاتيح</span>
+      <button id="themeBtn" class="icon-btn" title="تبديل الوضع الليلي/النهاري" aria-label="تبديل المظهر">🌓</button>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="image" role="tab">📷 تحليل الصورة</button>
+    <button class="tab" data-tab="live" role="tab">📈 السوق المباشر</button>
+    <button class="tab" data-tab="markets" role="tab">🌍 الأسواق والأخبار</button>
+    <button class="tab" data-tab="library" role="tab">📚 مكتبة الشموع</button>
+    <button class="tab" data-tab="keys" role="tab">🔑 المفاتيح</button>
+  </nav>
+
+  <main>
+    <!-- ================= تحليل الصورة ================= -->
+    <section id="tab-image" class="panel active">
+      <div class="grid-2">
+        <div class="card">
+          <h2>ارفع صورة الشارت</h2>
+          <label id="dropZone" class="dropzone" tabindex="0">
+            <input id="imageInput" type="file" accept="image/*" hidden />
+            <div id="dropHint">
+              <div class="big">⬆️</div>
+              <p>اسحب الصورة هنا، أو اضغط للاختيار، أو الصق (Ctrl+V)</p>
+              <small>PNG / JPG / WEBP — لقطة شاشة من TradingView أو MT4/MT5 أو أي منصة</small>
+            </div>
+            <img id="preview" alt="معاينة الشارت" hidden />
+          </label>
+
+          <div class="form-row">
+            <label>الأصل (اختياري — لإضافة بيانات حية من السوق)
+              <input id="imgSymbol" list="symbolList" placeholder="مثال: BTCUSDT" />
+            </label>
+            <label>الفريم
+              <select id="imgInterval"></select>
+            </label>
+          </div>
+          <label>ملاحظة للمحلل (اختياري)
+            <input id="imgNote" placeholder="مثال: أريد صفقة سكالبينج / الشارت للذهب على فريم 15 دقيقة" />
+          </label>
+          <div class="form-row">
+            <label class="radio"><input type="radio" name="mode" value="failover" checked /> مفتاح واحد (تبديل تلقائي عند الفشل)</label>
+            <label class="radio"><input type="radio" name="mode" value="consensus" /> تحليل جماعي بكل المفاتيح</label>
+          </div>
+          <button id="analyzeImageBtn" class="btn primary wide" disabled>🔍 حلل الشارت</button>
+          <div id="imgProgress" class="progress" hidden></div>
+        </div>
+
+        <div class="card" id="imgResultCard">
+          <h2>نتيجة التحليل</h2>
+          <div id="imgResult" class="empty">ارفع صورة واضغط "حلل الشارت" لتحصل على نقطة الدخول ووقف الخسارة والأهداف.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= السوق المباشر ================= -->
+    <section id="tab-live" class="panel">
+      <div class="card">
+        <div class="toolbar">
+          <label>الأصل
+            <input id="liveSymbol" list="symbolList" value="BTCUSDT" />
+          </label>
+          <label>الفريم
+            <select id="liveInterval"></select>
+          </label>
+          <button id="liveBtn" class="btn primary">تحليل</button>
+          <label class="check"><input id="autoRefresh" type="checkbox" /> تحديث تلقائي كل 60 ثانية</label>
+          <button id="liveAiBtn" class="btn">🤖 رأي الذكاء الاصطناعي</button>
+        </div>
+        <div id="liveStatus" class="muted small"></div>
+      </div>
+
+      <div class="grid-live">
+        <div class="card chart-card">
+          <canvas id="chart"></canvas>
+        </div>
+        <div class="card" id="tradePlan">
+          <div class="empty">اختر أصلاً واضغط "تحليل".</div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>المؤشرات الفنية</h3>
+          <div id="signalsTable" class="table-wrap"></div>
+        </div>
+        <div class="card">
+          <h3>أنماط الشموع المكتشفة (آخر 30 شمعة)</h3>
+          <div id="patternsList"></div>
+          <h3>الدعوم والمقاومات وفيبوناتشي</h3>
+          <div id="levelsBox"></div>
+        </div>
+      </div>
+      <div class="card" id="liveAiCard" hidden>
+        <h3>🤖 رأي الذكاء الاصطناعي</h3>
+        <div id="liveAi"></div>
+      </div>
+    </section>
+
+    <!-- ================= الأسواق والأخبار ================= -->
+    <section id="tab-markets" class="panel">
+      <div class="card">
+        <div class="toolbar">
+          <h2 class="grow">الأسواق العالمية الآن</h2>
+          <button id="refreshMarkets" class="btn">🔄 تحديث</button>
+        </div>
+        <div id="tickers" class="tickers"></div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <h3>العملات العالمية مقابل الدولار</h3>
+          <div id="forex" class="table-wrap"></div>
+          <p class="muted small">المصدر: البنك المركزي الأوروبي (يتحدث يومياً). الأخضر = العملة ارتفعت أمام الدولار.</p>
+        </div>
+        <div class="card">
+          <div class="toolbar">
+            <h3 class="grow">آخر الأخبار</h3>
+            <button id="aiNewsBtn" class="btn">🤖 ملخص الأخبار بالذكاء الاصطناعي</button>
+          </div>
+          <div id="aiNews"></div>
+          <div id="news" class="news"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= مكتبة الشموع ================= -->
+    <section id="tab-library" class="panel">
+      <div class="card">
+        <div class="toolbar">
+          <h2 class="grow">مكتبة الشموع اليابانية <span id="libCount" class="badge"></span></h2>
+          <input id="libSearch" placeholder="ابحث بالاسم العربي أو الإنجليزي..." />
+          <select id="libType">
+            <option value="">كل الأنواع</option>
+            <option value="bullish">صاعد</option>
+            <option value="bearish">هابط</option>
+            <option value="neutral">محايد</option>
+          </select>
+          <select id="libCandles">
+            <option value="">كل الأحجام</option>
+            <option value="1">شمعة واحدة</option>
+            <option value="2">شمعتان</option>
+            <option value="3">ثلاث شموع</option>
+            <option value="4">أربع شموع+</option>
+          </select>
+        </div>
+      </div>
+      <div id="library" class="library"></div>
+    </section>
+
+    <!-- ================= المفاتيح ================= -->
+    <section id="tab-keys" class="panel">
+      <div class="card">
+        <h2>مفاتيح الذكاء الاصطناعي (4 خانات)</h2>
+        <p class="muted">ضع مفاتيح <b>Google Gemini</b> (تبدأ بـ <code>AIza</code>) أو <b>Anthropic Claude</b> (تبدأ بـ <code>sk-ant-</code>). يتعرف التطبيق على النوع تلقائياً.
+          المفاتيح تُحفظ في متصفحك فقط ولا تُرسل إلا إلى Google أو Anthropic مباشرة.</p>
+        <div id="slots" class="slots"></div>
+        <div class="toolbar">
+          <button id="saveKeys" class="btn primary">💾 حفظ المفاتيح</button>
+          <button id="clearKeys" class="btn danger">🗑️ مسح الكل</button>
+          <span id="keysMsg" class="muted"></span>
+        </div>
+        <details class="help">
+          <summary>كيف أحصل على مفتاح؟</summary>
+          <ul>
+            <li><b>Gemini:</b> من Google AI Studio ← Get API key (يوجد استخدام مجاني).</li>
+            <li><b>Claude:</b> من Anthropic Console ← API Keys.</li>
+            <li>للحماية: استخدم مفاتيح بحدود إنفاق منخفضة، ولا تستخدم التطبيق على جهاز مشترك.</li>
+          </ul>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    ⚠️ هذا التطبيق أداة تعليمية للتحليل الفني وليس نصيحة استثمارية. التداول ينطوي على مخاطر عالية وقد تخسر رأس مالك. استخدم إدارة رأس مال صارمة دائماً.
+  </footer>
+
+  <datalist id="symbolList"></datalist>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
