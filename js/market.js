@@ -162,7 +162,7 @@ async function forexCandles(symbol, interval, limit, opts) {
       c.source = 'Tiingo';
       return c;
     } catch (e) {
-      if (e instanceof TiingoError && e.kind === 'cors') tiingoRestBlocked = true;
+      if (!(e instanceof TiingoError) || e.kind !== 'limit') tiingoRestBlocked = true;
       errors.push(e.message);
     }
   }
@@ -198,17 +198,62 @@ export async function getTickers(symbols = SYMBOLS.map((x) => x.s)) {
 // ----------------- الفوركس (العملات العالمية) -----------------
 const FX_HOSTS = ['https://api.frankfurter.app', 'https://api.frankfurter.dev/v1'];
 export const FX_CURRENCIES = ['EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'CAD', 'NZD', 'CNY', 'TRY', 'SEK', 'NOK', 'INR'];
+// عملات إضافية يوفرها المصدر الاحتياطي فقط
+export const FX_EXTRA = ['SDG', 'EGP', 'SAR', 'AED', 'KWD', 'QAR'];
 export const FX_NAMES = {
   EUR: 'اليورو', GBP: 'الجنيه الإسترليني', JPY: 'الين الياباني', CHF: 'الفرنك السويسري', AUD: 'الدولار الأسترالي',
   CAD: 'الدولار الكندي', NZD: 'الدولار النيوزيلندي', CNY: 'اليوان الصيني', TRY: 'الليرة التركية', SEK: 'الكرونة السويدية',
   NOK: 'الكرونة النرويجية', INR: 'الروبية الهندية',
+  SDG: 'الجنيه السوداني', EGP: 'الجنيه المصري', SAR: 'الريال السعودي', AED: 'الدرهم الإماراتي', KWD: 'الدينار الكويتي', QAR: 'الريال القطري',
 };
 
 /**
  * أسعار العملات مقابل الدولار وتغيرها (آخر يومين تداول)
  * change > 0 يعني أن العملة ارتفعت أمام الدولار
  */
+/** تحويل جدولَي أسعار (اليوم والسابق، كم وحدة لكل 1 دولار) إلى صفوف الجدول */
+export function forexRows(today, prev, codes) {
+  return codes.filter((c) => today[c] && prev[c]).map((c) => {
+    const now = 1 / today[c], before = 1 / prev[c]; // كم دولار تساوي وحدة واحدة من العملة
+    return { code: c, name: FX_NAMES[c] || c, usdPerUnit: now, perUsd: today[c], change: ((now - before) / before) * 100 };
+  });
+}
+
+/**
+ * المصدر الاحتياطي: currency-api (مفتوح المصدر، يتحدث يومياً) عبر شبكة jsDelivr
+ * لكل يوم وسم بالتاريخ، فنقارن آخر يوم باليوم الذي قبله
+ */
+const CURRENCY_API = (tag) => [
+  `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@${tag}/v1/currencies/usd.min.json`,
+  `https://${tag}.currency-api.pages.dev/v1/currencies/usd.min.json`,
+];
+async function currencyApiDay(tag) {
+  let lastErr;
+  for (const u of CURRENCY_API(tag)) { try { return await fetchJSON(u); } catch (e) { lastErr = e; } }
+  throw lastErr;
+}
+export async function getForexFallback() {
+  const latest = await currencyApiDay('latest');
+  const day = latest.date;
+  let prev = null;
+  for (let back = 1; back <= 4 && !prev; back++) {
+    const tag = new Date(Date.parse(day) - back * 86400000).toISOString().slice(0, 10);
+    try { prev = await currencyApiDay(tag); } catch { /* جرّب اليوم السابق */ }
+  }
+  const up = (o) => Object.fromEntries(Object.entries(o?.usd || {}).map(([k, v]) => [k.toUpperCase(), v]));
+  const today = up(latest), before = prev ? up(prev) : today;
+  return { date: day, source: 'currency-api (jsDelivr)', rows: forexRows(today, before, [...FX_CURRENCIES, ...FX_EXTRA]) };
+}
+
 export async function getForex() {
+  try { return await getForexPrimary(); } catch (e1) {
+    try { return await getForexFallback(); } catch (e2) {
+      throw new Error('تعذر جلب أسعار العملات من المصدرين: ' + (e1?.message || '') + ' / ' + (e2?.message || ''));
+    }
+  }
+}
+
+async function getForexPrimary() {
   const end = new Date();
   const start = new Date(end.getTime() - 10 * 86400000);
   const d = (x) => x.toISOString().slice(0, 10);
@@ -219,14 +264,7 @@ export async function getForex() {
   if (!data) throw new Error('تعذر جلب أسعار الفوركس: ' + (lastErr?.message || ''));
   const days = Object.keys(data.rates).sort();
   const today = data.rates[days[days.length - 1]], prev = data.rates[days[days.length - 2]] || today;
-  return {
-    date: days[days.length - 1],
-    rows: FX_CURRENCIES.filter((c) => today[c]).map((c) => {
-      // السعر مقابل الدولار: كم دولار تساوي وحدة واحدة من العملة
-      const now = 1 / today[c], before = 1 / prev[c];
-      return { code: c, name: FX_NAMES[c], usdPerUnit: now, perUsd: today[c], change: ((now - before) / before) * 100 };
-    }),
-  };
+  return { date: days[days.length - 1], source: 'Frankfurter (ECB)', rows: forexRows(today, prev, FX_CURRENCIES) };
 }
 
 // ----------------- الأخبار -----------------

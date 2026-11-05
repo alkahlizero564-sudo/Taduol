@@ -97,3 +97,22 @@ test('tdQuotes parses single and batch responses', async () => {
   assert.equal(many[1].closed, true);
   assert.equal(new URL(calls[0]).searchParams.get('symbol'), 'EUR/USD,XAU/USD,BAD/SYM');
 });
+
+test('forex table falls back to currency-api (jsDelivr) when Frankfurter is blocked, incl. SDG', async () => {
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(String(url));
+    if (/frankfurter/.test(url)) throw new TypeError('Failed to fetch');
+    const day = String(url).includes('@latest') ? '2026-11-05' : String(url).match(/@(\d{4}-\d{2}-\d{2})/)?.[1];
+    if (!day) throw new TypeError('Failed to fetch');
+    const k = day === '2026-11-05' ? 1 : 1.01; // اليوم: الدولار أضعف بـ 1% → العملات ارتفعت
+    return { ok: true, status: 200, json: async () => ({ date: day, usd: { eur: 0.888 * k, gbp: 0.741 * k, sdg: 600 * k, egp: 54.6 * k } }) };
+  };
+  const fx = await m.getForex();
+  assert.match(fx.source, /currency-api/);
+  assert.equal(fx.date, '2026-11-05');
+  const sdg = fx.rows.find((r) => r.code === 'SDG');
+  assert.equal(sdg.name, 'الجنيه السوداني');
+  assert.ok(Math.abs(sdg.change - 1) < 0.01, 'SDG rose ~1% vs USD: ' + sdg.change);
+  assert.ok(urls.some((u) => u.includes('@2026-11-04')), 'compared with the previous day');
+});

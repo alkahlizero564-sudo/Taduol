@@ -102,7 +102,10 @@ async function get(path, params, key = getTiingoKey(), { cacheMs = CACHE_MS } = 
   if (status === 403 && /cloudflare|access denied|error 10(09|20)|banned|country/i.test(typeof data === 'string' ? data : '')) {
     throw new TiingoError(`Tiingo يحجب الاتصال من شبكتك/بلدك (HTTP 403 — حجب Cloudflare)`, 'blocked');
   }
-  if (status === 401 || status === 403) throw new TiingoError('مفتاح Tiingo غير صالح', 'invalid');
+  if (status === 401 || status === 403) {
+    const why = typeof data === 'object' && data?.detail ? data.detail : typeof data === 'string' ? data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) : '';
+    throw new TiingoError(`Tiingo رفض الطلب (HTTP ${status}${why ? ': ' + why : ''}) — المفتاح غير صالح أو الوصول محجوب من شبكتك`, 'invalid');
+  }
   if (status === 429) throw new TiingoError('تجاوزت حد Tiingo — انتظر قليلاً', 'limit');
   if (status >= 400 || !data) {
     const body = typeof data === 'string' ? data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90) : '';

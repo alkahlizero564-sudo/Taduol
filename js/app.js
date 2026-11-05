@@ -5,7 +5,7 @@ import { PATTERNS, PATTERN_MAP, detectPatterns } from './patterns.js';
 import { analyze, summaryForAI, fmt } from './analysis.js';
 import { computeAll } from './indicators.js';
 import { technicalRating, RATING_LABELS } from './rating.js';
-import { getCandles, getLatestCandles, mergeCandles, isTiingoSymbol, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, tdWatchlist, tdQuotes, getTwelveKeys, setTwelveKeys, testTwelveKey, tdPool, isBinanceSymbol, normalizeTDSymbol } from './market.js';
+import { getForexFallback, getCandles, getLatestCandles, mergeCandles, isTiingoSymbol, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, tdWatchlist, tdQuotes, getTwelveKeys, setTwelveKeys, testTwelveKey, tdPool, isBinanceSymbol, normalizeTDSymbol } from './market.js';
 import {
   loadSlots, saveSlots, resolveSlot, activeSlots, detectProvider, testSlot, SLOT_COUNT,
   CLAUDE_MODELS, GEMINI_MODELS, listGeminiModels, saveGeminiModelList, loadGeminiModelList, analyzeChartImage, fileToBase64, aiMarketNews,
@@ -492,7 +492,7 @@ function loadForexAndNews() {
   getForex().then((fx) => {
     $('#forex').innerHTML = `<table><thead><tr><th>العملة</th><th>مقابل 1$</th><th>التغير</th></tr></thead><tbody>${
       fx.rows.map((r) => `<tr><td><b>${r.code}</b> ${esc(r.name)}</td><td class="num">${r.perUsd.toFixed(4)}</td><td class="${r.change > 0 ? 'up' : r.change < 0 ? 'down' : 'flat'}">${r.change > 0 ? '▲ ارتفعت' : r.change < 0 ? '▼ انخفضت' : '● ثابتة'} ${Math.abs(r.change).toFixed(2)}%</td></tr>`).join('')
-    }</tbody></table><p class="small muted">تاريخ آخر تحديث: ${esc(fx.date)}</p>`;
+    }</tbody></table><p class="small muted">تاريخ آخر تحديث: ${esc(fx.date)} · المصدر: ${esc(fx.source || '')}</p>`;
   }).catch((e) => { $('#forex').innerHTML = `<p class="down">❌ ${esc(e.message)}</p>`; });
 
   getNews().then((items) => {
@@ -796,7 +796,6 @@ async function runDiagnostics() {
   };
   const ws = (r) => ({ ok: r.ok, detail: `${r.detail} · ${r.ms}ms${r.first ? ' · ' + r.first : ''}` });
 
-  await step('الإنترنت (موقع عام)', async () => { const r = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR'); return { ok: r.ok, detail: 'HTTP ' + r.status }; });
   await step('Binance — الأسعار', async () => { const c = await getCandles('BTCUSDT', '1h', 2); return { detail: 'BTC = ' + fmt(c[c.length - 1].c) }; });
   await step('Binance — البث المباشر', async () => {
     const a = await probeWebSocket('wss://data-stream.binance.vision/ws/btcusdt@trade', { timeoutMs: 8000 });
@@ -813,16 +812,22 @@ async function runDiagnostics() {
   } else diagResults.push({ name: 'Tiingo', ok: null, detail: 'لا يوجد مفتاح' });
   if (tdKey) await step('Twelve Data (طلب واحد)', async () => ({ detail: await testTwelveKey(tdKey) }));
   else diagResults.push({ name: 'Twelve Data', ok: null, detail: 'لا يوجد مفتاح' });
+  await step('جدول العملات — Frankfurter', async () => { const r = await fetch('https://api.frankfurter.app/latest?from=USD&to=EUR'); return { ok: r.ok, detail: 'HTTP ' + r.status }; });
+  await step('جدول العملات — المصدر الاحتياطي', async () => { const f = await getForexFallback(); return { detail: `${f.rows.length} عملة · ${f.date}` }; });
   render();
   // خلاصة مفهومة
   const fail = (n) => diagResults.find((r) => r.name.startsWith(n) && r.ok === false);
-  let hint = '';
-  if (fail('الإنترنت')) hint = 'لا يوجد اتصال بالإنترنت أو أن الشبكة تحجب المواقع الخارجية.';
-  else if (fail('Tiingo — البث') && fail('Tiingo — الشموع')) hint = 'Tiingo لا يعمل من شبكتك (غالباً حجب حسب الدولة أو المفتاح غير صالح). استخدم Twelve Data للفوركس، أو جرّب VPN.';
-  else if (fail('Tiingo — البث')) hint = 'مفتاح Tiingo يعمل للشموع لكن البث المباشر محجوب من شبكتك — التطبيق سيحدّث الفوركس بالطلبات العادية.';
-  else if (fail('Binance — البث')) hint = 'بث Binance محجوب من شبكتك — التطبيق سيحدّث العملات الرقمية بالطلبات العادية كل 10 ثوانٍ.';
-  else hint = 'كل المصادر المتاحة تعمل ✓';
-  out.insertAdjacentHTML('beforeend', `<p class="small"><b>الخلاصة:</b> ${esc(hint)}</p>`);
+  const pass = (n) => diagResults.find((r) => r.name.startsWith(n) && r.ok === true);
+  const hints = [];
+  if (!diagResults.some((r) => r.ok === true)) hints.push('لا يوجد اتصال بالإنترنت أو أن الشبكة تحجب كل المصادر.');
+  else {
+    hints.push(pass('Binance — البث') ? '✅ العملات الرقمية: بث مباشر لحظي.' : pass('Binance — الأسعار') ? '⚠️ العملات الرقمية: البث محجوب، التحديث كل 10 ثوانٍ بالطلبات.' : '❌ Binance لا يعمل من شبكتك.');
+    if (pass('Tiingo — البث')) hints.push('✅ الفوركس والذهب: بث Tiingo المباشر يعمل.');
+    else if (pass('Twelve Data')) hints.push(`⚠️ Tiingo ${fail('Tiingo') ? 'لا يعمل من شبكتك (غالباً حجب حسب الدولة — جرّب VPN)' : 'غير مضاف'} — الفوركس والذهب يعملان من Twelve Data.`);
+    else hints.push('❌ لا يوجد مصدر يعمل للفوركس والذهب — أضف مفتاح Twelve Data.');
+    hints.push(pass('جدول العملات — Frankfurter') ? '✅ جدول العملات العالمية يعمل.' : pass('جدول العملات — المصدر الاحتياطي') ? '✅ جدول العملات العالمية يعمل من المصدر الاحتياطي.' : '❌ جدول العملات العالمية لا يعمل.');
+  }
+  out.insertAdjacentHTML('beforeend', `<p class="small"><b>الخلاصة:</b><br>${hints.map(esc).join('<br>')}</p>`);
   $('#diagCopy').hidden = false; $('#diagCopy').textContent = '📋 نسخ النتيجة';
   btn.disabled = false;
 }
