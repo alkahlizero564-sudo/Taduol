@@ -188,3 +188,6 @@ td.num { direction: ltr; text-align: left; font-variant-numeric: tabular-nums; }
 }
 .toolbar > input, .toolbar > select { flex: 0 1 220px; width: auto; }
 @media (max-width: 600px) { .toolbar > input, .toolbar > select { flex: 1 1 100%; } }
+/* مساحة شريط الحالة والأزرار في تطبيق Android والهواتف ذات النتوء */
+.topbar { padding-top: calc(.8rem + env(safe-area-inset-top, 0px)); padding-left: calc(1rem + env(safe-area-inset-left, 0px)); padding-right: calc(1rem + env(safe-area-inset-right, 0px)); }
+.footer { padding-bottom: calc(2rem + env(safe-area-inset-bottom, 0px)); }

@@ -26,6 +26,32 @@ npm start          # ثم افتح http://localhost:8080
 
 > ملاحظة: يجب فتحه عبر `http://` وليس بفتح الملف مباشرة (`file://`) لأن التطبيق يستخدم ES Modules.
 
+## 📱 تطبيق Android (APK)
+
+المشروع مغلّف بـ [Capacitor](https://capacitorjs.com) داخل مجلد `android/`.
+
+**التثبيت على الهاتف:** انقل ملف `Taduol-x.y.apk` للهاتف ← افتحه ← اسمح بـ "التثبيت من مصادر غير معروفة" ← تثبيت.
+
+**بناء APK بنفسك** (يحتاج JDK 21 و Android SDK بمنصة 36):
+
+```bash
+npm install
+npm run android:sync                 # ينسخ ملفات الويب إلى android/
+cd android && ./gradlew assembleRelease
+# الناتج: android/app/build/outputs/apk/release/app-release.apk
+```
+
+- أيقونة التطبيق وشاشة البداية تُولَّد بـ `python3 scripts/make-icons.py`.
+- **التوقيع:** ضع ملف المفتاح و`android/keystore.properties` بهذه الصيغة (الملفان لا يُرفعان للمستودع):
+  ```
+  storeFile=taduol-release.keystore
+  storePassword=...
+  keyAlias=taduol
+  keyPassword=...
+  ```
+  استخدم **نفس المفتاح دائماً** حتى تُثبَّت التحديثات فوق النسخة القديمة دون فقدان المفاتيح المحفوظة.
+- عند كل تحديث ارفع `versionCode` في `android/app/build.gradle`.
+
 ## الاختبارات
 
 ```bash

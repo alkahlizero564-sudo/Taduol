@@ -1,0 +1,9 @@
+{
+  "appId": "com.taduol.analyzer",
+  "appName": "تداول",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true
+  }
+}
