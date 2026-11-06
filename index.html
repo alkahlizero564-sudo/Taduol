@@ -27,6 +27,7 @@
   <nav class="tabs" role="tablist">
     <button class="tab active" data-tab="image" role="tab">📷 تحليل الصورة</button>
     <button class="tab" data-tab="live" role="tab">📈 السوق المباشر</button>
+    <button class="tab" data-tab="chart" role="tab">📊 الشارت</button>
     <button class="tab" data-tab="markets" role="tab">🌍 الأسواق والأخبار</button>
     <button class="tab" data-tab="library" role="tab">📚 مكتبة الشموع</button>
     <button class="tab" data-tab="keys" role="tab">🔑 المفاتيح</button>
@@ -113,17 +114,6 @@
       </div>
 
       <div class="grid-live">
-        <div class="card chart-card">
-          <div class="chart-tools">
-            <button class="chip-btn" id="chartFullBtn" title="شاشة كاملة">⛶ شاشة كاملة</button>
-            <button class="chip-btn" data-zoom="0.8" title="تكبير">＋</button>
-            <button class="chip-btn" data-zoom="1.25" title="تصغير">－</button>
-            <button class="chip-btn" data-reset="1" title="إعادة الضبط">⟲</button>
-            <button class="chip-btn active" id="historyBtn" title="صفقات الاستراتيجية السابقة على الشارت">✓✗ صفقات سابقة</button>
-          </div>
-          <div id="chart" class="lw-host"></div>
-          <p class="chart-hint small muted">اسحب للتنقل · إصبعين للتكبير · المس الشارت لعرض بيانات الشمعة · اسحب محور الأسعار لتمديده</p>
-        </div>
         <div class="card" id="tradePlan">
           <div class="empty">اختر أصلاً واضغط "تحليل".</div>
         </div>
@@ -140,6 +130,35 @@
           <h3>الدعوم والمقاومات وفيبوناتشي</h3>
           <div id="levelsBox"></div>
         </div>
+      </div>
+    </section>
+
+    <!-- ================= الشارت (تبويب مستقل) ================= -->
+    <section id="tab-chart" class="panel">
+      <div class="card">
+        <div class="toolbar">
+          <input id="symSearch" placeholder="🔎 ابحث عن عملة..." />
+          <select id="symGroup">
+            <option value="all">الكل</option>
+            <option value="crypto">عملات رقمية</option>
+            <option value="fx">فوركس وذهب</option>
+            <option value="stocks">أسهم</option>
+          </select>
+        </div>
+        <div id="symList" class="sym-list"></div>
+        <div id="chTfs" class="chart-tools" style="margin-top:.5rem"></div>
+      </div>
+
+      <div class="card chart-card">
+        <div class="chart-tools">
+          <button class="chip-btn" id="chartFullBtn" title="شاشة كاملة">⛶ شاشة كاملة</button>
+          <button class="chip-btn" data-zoom="0.8" title="تكبير">＋</button>
+          <button class="chip-btn" data-zoom="1.25" title="تصغير">－</button>
+          <button class="chip-btn" data-reset="1" title="إعادة الضبط">⟲</button>
+          <button class="chip-btn active" id="historyBtn" title="صفقات الاستراتيجية السابقة على الشارت">✓✗ صفقات سابقة</button>
+        </div>
+        <div id="chart" class="lw-host"></div>
+        <p class="chart-hint small muted">اسحب للتنقل · إصبعين للتكبير · المس الشارت لعرض بيانات الشمعة · اسحب محور الأسعار لتمديده</p>
       </div>
     </section>
 
@@ -276,3 +295,4 @@
   <script type="module" src="js/app.js"></script>
 </body>
 </html>
+ 
