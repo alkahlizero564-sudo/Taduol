@@ -6,6 +6,7 @@
 //  • اختبار تاريخي (Backtest) لنفس الاستراتيجية على نفس الرمز والفريم
 // =====================================================================
 import { last, swings } from './indicators.js';
+import { supertrend, bollinger, volumeSpike } from './extra.js';
 
 /** هيكل السوق من آخر قمتين وآخر قاعين */
 export function marketStructure(candles, look = 120) {
@@ -86,6 +87,14 @@ export function buildPlan(candles, ctx) {
   // 8) الانفراج
   if (div) f(div.type === (side === 1 ? 'bullish' : 'bearish'), div.text, 1.2);
 
+  // 9) مؤشرات إضافية: Supertrend + بولينجر + حجم التداول
+  const st = supertrend(candles);
+  if (st) f(st.dir === side, `Supertrend ${st.dir === 1 ? 'صاعد' : 'هابط'}`, 1.2);
+  const bb = bollinger(candles);
+  if (bb) f(side === 1 ? bb.pos > 0 && bb.pos < 0.95 : bb.pos < 0 && bb.pos > -0.95, 'موقع السعر في بولينجر مناسب للاتجاه', 0.6);
+  const vs = volumeSpike(candles);
+  if (vs) f(true, 'حجم التداول أعلى من المتوسط (تأكيد)', 0.5);
+
   // ---------------- الدخول ----------------
   const ext = e20 ? (price - e20) * side / atr : 0; // ابتعاد السعر عن EMA20 بوحدات ATR
   let entryType = 'market', entry = price;
@@ -136,6 +145,7 @@ export function buildPlan(candles, ctx) {
   let grade = 'C';
   if (trendOk && structOk) grade = (entryType === 'limit' || confluence >= 0.75) && noBlock ? 'A' : 'B';
   if (grade === 'A' && htfKnown && !(htf * side > 0.3)) grade = 'B'; // A يتطلب موافقة قوية من الفريم الأكبر
+  if (grade === 'A' && st && st.dir !== side) grade = 'B'; // A يتطلب موافقة Supertrend
   // الإشارة الفعلية لدرجة A فقط (أفضل نتيجة في الاختبار التاريخي خارج العينة)؛ B للاطلاع فقط
   const direction = grade === 'A' && !htfAgainst ? S : 'WAIT';
   const confidence = Math.round(Math.min(92, 100 * (0.6 * confluence + 0.4 * Math.min(1, Math.abs(score) * 1.8))));
@@ -329,3 +339,4 @@ export function committeeVerdict(ai, review, engine) {
   reasons.push(`المحرك الفني: إعداد درجة ${engine.grade} فقط — ليست كل الشروط متوفرة`);
   return { level: 'weak', title: `⚠️ توصية ضعيفة: ${review.side === 'BUY' ? 'شراء' : 'بيع'} — بحجم صغير أو انتظر`, reasons, plan: review };
 }
+ 
