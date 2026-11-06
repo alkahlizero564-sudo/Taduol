@@ -124,3 +124,14 @@ test('reviewExpertPlan never returns R:R below 1.5 (even after widening a tight 
   assert.equal(r.targets[0], 4155, 'uses the next real target (≈3R) instead of the too-close one');
   assert.ok(r.targets.every((t, i, a) => i === 0 || t > a[i - 1]));
 });
+
+test('backtest with minGrade C trades every recommendation and reports stats per grade', async () => {
+  const { backtest } = await import('../js/strategy.js');
+  const mk2 = (closes) => closes.map((c, i) => ({ t: i * 36e5, o: c - 0.2, h: c + 0.6, l: c - 0.6, c, v: 10 }));
+  const c = mk2(Array.from({ length: 460 }, (_, i) => 100 + i * 0.1 + 3 * Math.sin(i / 4) + 2 * Math.sin(i / 23)));
+  const all = backtest(c, (s) => analyze(s), { start: 300, step: 3, minGrade: 'C' });
+  const onlyA = backtest(c, (s) => analyze(s), { start: 300, step: 3, minGrade: 'A' });
+  assert.ok(all.trades >= onlyA.trades);
+  assert.equal(all.byGrade.A.trades + all.byGrade.B.trades + all.byGrade.C.trades, all.trades);
+  for (const g of ['A', 'B', 'C']) assert.ok(all.byGrade[g].winRate >= 0 && all.byGrade[g].winRate <= 100);
+});

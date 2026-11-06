@@ -188,8 +188,8 @@ function initLive() {
   live.chart = createProChart($('#chart'));
   $$('.chart-tools [data-zoom]').forEach((b) => (b.onclick = () => live.chart.zoom(+b.dataset.zoom)));
   $('.chart-tools [data-reset]').onclick = () => live.chart.reset();
-  const toggleOpt = (btn, key) => { btn.onclick = () => { const on = !live.chart.options[key]; [live.chart, live.big].forEach((ch) => { if (ch) { ch.options[key] = on; ch.render(); } }); btn.classList.toggle('active', on); const cf = { scenario: '#cfScenario', history: '#cfHistory' }[key]; if (cf) $(cf).checked = on; }; };
-  toggleOpt($('#scenarioBtn'), 'scenario'); toggleOpt($('#historyBtn'), 'history');
+  const toggleOpt = (btn, key) => { btn.onclick = () => { const on = !live.chart.options[key]; [live.chart, live.big].forEach((ch) => { if (ch) { ch.options[key] = on; ch.render(); } }); btn.classList.toggle('active', on); const cf = { history: '#cfHistory' }[key]; if (cf) $(cf).checked = on; }; };
+  toggleOpt($('#historyBtn'), 'history');
   $('#chartFullBtn').onclick = openFull;
   initFull();
   try { const a = JSON.parse(store.get('taduol.account', '{}')); live.account = { balance: +a.balance || 0, risk: +a.risk || 1 }; } catch { live.account = { balance: 0, risk: 1 }; }
@@ -312,11 +312,13 @@ function renderAll(isTick = false) {
   const r = analyze(candles, { htf });
   live.res = r;
   // ثبات الإشارة: لا نغيّر القرار المعروض إلا إذا تكرر الاتجاه الجديد في تحليلين متتاليين
-  if (!isTick || live.stable == null) { live.stable = r.direction; live.stableRes = r; live.pending = null; }
-  else if (r.direction === live.stable) { live.stableRes = r; live.pending = null; }
+  // ثبات التوصية: لا يتغير الاتجاه/الدرجة المعروضة إلا إذا استمر التغيير 20 ثانية
+  const key = `${r.side}|${r.grade}`;
+  if (!isTick || live.stable == null) { live.stable = key; live.stableRes = r; live.pending = null; }
+  else if (key === live.stable) { live.stableRes = r; live.pending = null; }
   else {
-    live.pending = live.pending?.dir === r.direction ? { ...live.pending, n: live.pending.n + 1 } : { dir: r.direction, n: 1, since: Date.now() };
-    if (live.pending.n >= 2 && Date.now() - live.pending.since >= 20000) { live.stable = r.direction; live.stableRes = r; live.pending = null; }
+    live.pending = live.pending?.key === key ? { ...live.pending, n: live.pending.n + 1 } : { key, dir: r.side, grade: r.grade, n: 1, since: Date.now() };
+    if (live.pending.n >= 2 && Date.now() - live.pending.since >= 20000) { live.stable = key; live.stableRes = r; live.pending = null; }
   }
   live.recentPatterns = detectPatterns(candles, { lookback: 30 });
   if (live.mtf) live.mtf[live.interval] = { rating: live.res.rating, at: Date.now() };
@@ -449,7 +451,7 @@ function initFull() {
   $$('#cfTfs [data-tf]').forEach((b) => (b.onclick = () => { $('#liveInterval').value = b.dataset.tf; loadLive(); }));
   $('#cfClose').onclick = () => closeFull(false);
   const tog = (id, key) => { $(id).onchange = (e) => { if (live.big) { live.big.options[key] = e.target.checked; live.big.render(); } }; };
-  tog('#cfRsi', 'rsi'); tog('#cfVol', 'volume'); tog('#cfLvl', 'levels'); tog('#cfTrade', 'trade'); tog('#cfScenario', 'scenario'); tog('#cfHistory', 'history');
+  tog('#cfRsi', 'rsi'); tog('#cfVol', 'volume'); tog('#cfLvl', 'levels'); tog('#cfTrade', 'trade'); tog('#cfHistory', 'history');
   $$('[data-cfzoom]').forEach((b) => (b.onclick = () => live.big?.zoom(+b.dataset.cfzoom)));
   $('#cfReset').onclick = () => live.big?.reset();
   // زر الرجوع في Android يغلق الشاشة الكاملة بدل الخروج من التطبيق
@@ -461,8 +463,8 @@ function openFull() {
   document.body.classList.add('no-scroll');
   if (!live.big) {
     live.big = createProChart($('#chartBig'), { fullscreen: true, rsi: true });
-    live.big.options.scenario = live.chart.options.scenario; live.big.options.history = live.chart.options.history;
-    $('#cfScenario').checked = live.big.options.scenario; $('#cfHistory').checked = live.big.options.history;
+    live.big.options.history = live.chart.options.history;
+    $('#cfHistory').checked = live.big.options.history;
   }
   if (live.btMarks) live.big.setTradeMarks(live.btMarks);
   history.pushState({ chartFull: 1 }, '');
@@ -479,7 +481,7 @@ function renderFullHead() {
   const useEx = ex?.show && ex.sym === live.symbol && ex.verdict?.plan;
   const base = live.stableRes || live.res;
   const r = useEx ? { ...base, ...ex.verdict.plan } : base;
-  const dir = useEx ? (ex.verdict.level === 'wait' ? 'WAIT' : ex.verdict.plan.side) : live.stable || r.direction;
+  const dir = useEx ? (ex.verdict.level === 'wait' ? 'WAIT' : ex.verdict.plan.side) : r.side;
   const price = live.candles[live.candles.length - 1].c;
   $('#cfSymbol').textContent = `${live.symbol} · ${live.interval}`;
   $('#cfPrice').textContent = fmt(price);
@@ -500,14 +502,16 @@ function renderFullHead() {
 
 function renderPlan() {
   const r = live.stableRes || live.res;
-  const dir = live.stable || r.direction;
+  const dir = r.side; // التوصية دائماً شراء أو بيع، وجودتها تحددها الدرجة
   const sideWord = r.side === 'BUY' ? 'صعود' : 'هبوط';
+  const GRADE = { A: { t: 'توصية قوية', cls: dir, risk: 1, tip: 'كل الشروط متوفرة: الترند + هيكل السوق + الفريم الأكبر + موقع دخول جيد.' },
+    B: { t: 'توصية متوسطة', cls: 'WAIT', risk: 0.5, tip: 'معظم الشروط متوفرة — استخدم نصف حجم المخاطرة.' },
+    C: { t: 'توصية ضعيفة', cls: 'WEAK', risk: 0.25, tip: 'الشروط ناقصة — حجم صغير جداً، أو انتظر تحسّن الدرجة.' } }[r.grade];
+  const gs = live.bt?.status === 'done' ? live.bt.byGrade?.[r.grade] : null;
   const R = (t) => (Math.abs(t - r.entry) / r.risk).toFixed(1);
   const icon = (ok) => (ok === true ? '<span class="ok">✓</span>' : ok === false ? '<span class="no">✗</span>' : '<span class="na">•</span>');
-  const waitNote = dir !== 'WAIT' ? '' : r.grade === 'B'
-    ? `<p class="small muted">إعداد متوسط (B) نحو ال${sideWord}: الخطة أدناه للاطلاع فقط — لم يجتز شروط الدرجة A (في الاختبار التاريخي كانت إعدادات B خاسرة في المتوسط).</p>`
-    : `<p class="small muted">لا توجد صفقة جيدة الآن. الأرقام أدناه سيناريو ${sideWord} محتمل فقط — انتظر توافق الترند مع هيكل السوق.</p>`;
-  const hiddenNote = dir === 'WAIT' && !live.chart?.options.scenario ? '<p class="small muted">📍 خطوط الصفقة مخفية على الشارت لأنه لا توجد إشارة — لعرض السيناريو اضغط «👁 سيناريو».</p>' : '';
+  const gradeNote = `<p class="small">${GRADE.tip} المخاطرة المقترحة: <b>${GRADE.risk}%</b> من رأس المال.</p>`
+    + (gs ? `<p class="small grade-hist">📊 توصيات <b>${r.grade}</b> على ${esc(live.symbol)} · ${esc(live.interval)} تاريخياً: ${gs.trades ? `${gs.trades} صفقة · نجاح <b class="${gs.winRate >= 50 ? 'up' : 'down'}">${gs.winRate}%</b> · متوسط <b class="${gs.avgR > 0 ? 'up' : 'down'}">${gs.avgR > 0 ? '+' : ''}${gs.avgR}R</b>${gs.trades < 10 ? ' <span class="muted">(عينة صغيرة)</span>' : ''}` : 'لا توجد صفقات بهذه الدرجة في الفترة المختبرة'}</p>` : '');
   const acct = live.account || { balance: 0, risk: 1 };
   const isFx = !isBinanceSymbol(live.symbol);
   const qty = acct.balance > 0 && r.risk > 0 ? (acct.balance * acct.risk / 100) / r.risk : 0;
@@ -516,20 +520,20 @@ function renderPlan() {
     ? `<div class="bt-box"><span class="spinner"></span> اختبار الاستراتيجية على البيانات السابقة لهذا الرمز${bt.p ? ' — ' + Math.round(bt.p * 100) + '%' : ''}...</div>`
     : bt.status === 'error' ? `<div class="bt-box muted">تعذر الاختبار التاريخي: ${esc(bt.msg)}</div>`
     : `<div class="bt-box"><b>📊 أداء هذه الاستراتيجية تاريخياً على ${esc(live.symbol)} · ${esc(live.interval)}</b> (آخر ${bt.bars} شمعة):<br>
-        ${bt.trades ? `${bt.trades} صفقة · نجاح <b class="${bt.winRate >= 50 ? 'up' : 'down'}">${bt.winRate}%</b> · متوسط العائد <b class="${bt.avgR > 0 ? 'up' : 'down'}">${bt.avgR > 0 ? '+' : ''}${bt.avgR}R</b> للصفقة`
-          : 'لم تظهر إشارات A في هذه الفترة.'}
-        ${bt.trades && bt.trades < 10 ? '<br><span class="muted">⚠️ عدد الصفقات قليل — النتيجة غير موثوقة إحصائياً.</span>' : ''}
-        ${bt.trades >= 10 && bt.avgR <= 0 ? '<br><span class="down">⚠️ الاستراتيجية لم تكن مربحة على هذا الرمز/الفريم — كن حذراً أو جرّب فريماً آخر.</span>' : ''}
-        ${bt.trades ? '<br><span class="small">✓✗ هذه الصفقات مرسومة على الشارت (أخضر = ربحت، أحمر = خسرت).</span>' : ''}
+        <table class="small"><thead><tr><th>الدرجة</th><th>صفقات</th><th>نجاح</th><th>متوسط</th></tr></thead><tbody>
+        ${['A', 'B', 'C'].map((g) => { const x = bt.byGrade?.[g] || { trades: 0 }; return `<tr${g === r.grade ? ' style="font-weight:700"' : ''}><td>${g}</td><td>${x.trades}</td><td class="${x.winRate >= 50 ? 'up' : 'down'}">${x.trades ? x.winRate + '%' : '—'}</td><td class="${x.avgR > 0 ? 'up' : 'down'}">${x.trades ? (x.avgR > 0 ? '+' : '') + x.avgR + 'R' : '—'}</td></tr>`; }).join('')}
+        </tbody></table>
+        ${bt.trades >= 10 && bt.byGrade?.[r.grade]?.trades >= 10 && bt.byGrade[r.grade].avgR <= 0 ? `<span class="down">⚠️ توصيات ${r.grade} لم تكن مربحة على هذا الرمز/الفريم — كن حذراً أو جرّب فريماً آخر.</span>` : ''}
+        ${bt.trades ? '<br><span class="small">✓✗ هذه الصفقات مرسومة على الشارت مع درجتها (أخضر = ربحت، أحمر = خسرت).</span>' : ''}
         <br><span class="muted small">النتائج السابقة لا تضمن المستقبل، ولا تشمل السبريد والعمولات.</span></div>`;
   $('#tradePlan').innerHTML = `
     <h3>خطة التداول — ${esc(live.symbol)} <span class="grade ${r.grade}" title="درجة الصفقة">${r.grade}</span></h3>
-    <div class="decision ${dir}">
-      <div><div class="word">${DIR_AR[dir]}</div><div class="small">الميل: ${r.bias} · الترند: ${r.trendStrength}</div></div>
+    <div class="decision ${GRADE.cls}">
+      <div><div class="word">${DIR_AR[dir]} ${dir === 'BUY' ? '⬆' : '⬇'}</div><div class="small"><b>${GRADE.t}</b> · الترند: ${r.trendStrength}</div></div>
       <div class="meter"><div class="small">التوافق ${Math.round(r.confluence * 100)}% · الثقة ${r.confidence}%</div><div class="bar"><div class="fill" style="width:${r.confidence}%"></div></div></div>
     </div>
-    ${live.pending ? `<p class="pending-note">⏳ إشارة جديدة (${DIR_AR[live.pending.dir]}) قيد التأكيد — يجب أن تستمر 20 ثانية (${Math.min(20, Math.round((Date.now() - live.pending.since) / 1000))}/20)</p>` : ''}
-    ${waitNote}${hiddenNote}
+    ${live.pending ? `<p class="pending-note">⏳ تغيّر محتمل إلى ${DIR_AR[live.pending.dir]} (${live.pending.grade}) قيد التأكيد — يجب أن يستمر 20 ثانية (${Math.min(20, Math.round((Date.now() - live.pending.since) / 1000))}/20)</p>` : ''}
+    ${gradeNote}
     <div class="levels">
       <div class="level"><span>${r.entryType === 'limit' ? 'دخول بأمر معلّق (Limit)' : 'دخول فوري'}</span><b>${fmt(r.entry)}</b><span>منطقة: ${fmt(r.entryZone[0])} – ${fmt(r.entryZone[1])}</span></div>
       <div class="level sl"><span>وقف الخسارة (خلف ${r.side === 'BUY' ? 'آخر قاع' : 'آخر قمة'})</span><b>${fmt(r.stopLoss)}</b><span>المخاطرة: ${fmt(r.risk)}</span></div>
@@ -581,12 +585,12 @@ async function runBacktest() {
     let lastP = 0;
     // نفس فلتر الفريم الأكبر داخل الاختبار (من الشموع الكبيرة المكتملة فقط)
     const htfAt = makeHtfLookup(c, iv, (big) => technicalRating(big, computeAll(big)).overall);
-    const bt = await backtestAsync(c, (sl) => analyze(sl, { htf: htfAt(sl[sl.length - 1].t) }), { start: Math.min(300, Math.floor(c.length / 2)), step: 2, minGrade: 'A' }, (p) => {
+    const bt = await backtestAsync(c, (sl) => analyze(sl, { htf: htfAt(sl[sl.length - 1].t) }), { start: Math.min(300, Math.floor(c.length / 2)), step: 2, minGrade: 'C' }, (p) => {
       if (p - lastP > 0.1 && sym === live.symbol) { lastP = p; live.bt = { status: 'loading', p }; renderPlan(); }
     });
     if (sym === live.symbol && iv === live.interval) {
       live.bt = { status: 'done', ...bt, bars: c.length };
-      live.btMarks = bt.list.map((t) => ({ t: c[t.at].t, side: t.side, R: t.R }));
+      live.btMarks = bt.list.map((t) => ({ t: c[t.at].t, side: t.side, R: t.R, grade: t.grade }));
       live.chart?.setTradeMarks(live.btMarks); live.big?.setTradeMarks(live.btMarks);
       renderPlan();
     }

@@ -304,3 +304,9 @@ body.no-scroll { overflow: hidden; }
   .cf-plan { padding: .2rem .5rem; }
   .cf-plan .pill { padding: .1rem .45rem; }
 }
+
+/* درجة C: توصية ضعيفة */
+.decision.WEAK { background: color-mix(in srgb, var(--muted) 12%, transparent); border: 1px solid var(--border); }
+.decision.WEAK .word { color: var(--muted); }
+.grade-hist { background: var(--bg); border-radius: 8px; padding: .35rem .6rem; }
+.bt-box table { margin: .3rem 0; }

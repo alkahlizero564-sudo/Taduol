@@ -119,7 +119,7 @@ export function createProChart(container, options = {}) {
     const t0 = st.candles.length ? st.candles[0].t : Infinity;
     const hist = st.opts.history ? (st.tradeMarks || []).filter((m) => m.t >= t0).map((m) => ({
       time: T(m.t), position: m.side === 'BUY' ? 'belowBar' : 'aboveBar', shape: m.side === 'BUY' ? 'arrowUp' : 'arrowDown',
-      color: m.R > 0 ? C.up : C.down, text: m.R > 0 ? `✓ +${m.R.toFixed(1)}R` : `✗ ${m.R.toFixed(1)}R`, size: 1.3,
+      color: m.R > 0 ? C.up : C.down, text: (m.R > 0 ? '✓' : '✗') + (m.grade || '') + ` ${m.R > 0 ? '+' : ''}${m.R.toFixed(1)}R`, size: m.grade === 'A' ? 1.3 : 1,
     })) : [];
     const byTime = new Map();
     [...pat, ...hist].forEach((m) => byTime.set(m.time + (m.text ? 0.5 : 0), m)); // علامة الصفقة لها أولوية في العرض
@@ -127,10 +127,11 @@ export function createProChart(container, options = {}) {
     // خطوط الصفقة
     tradeLines.forEach((l) => candle.removePriceLine(l)); tradeLines = [];
     // خطوط الصفقة تظهر فقط عند وجود إشارة فعلية؛ السيناريو عند "انتظار" يظهر فقط إذا طلبه المستخدم
-    if (st.opts.trade && res && isFinite(res.entry) && (res.direction !== 'WAIT' || st.opts.scenario)) {
-      const wait = res.direction === 'WAIT';
+    if (st.opts.trade && res && isFinite(res.entry)) {
+      const g = res.grade ? ` ${res.grade}` : '';
+      const strong = res.grade === 'A';
       const add = (price, color, title, style = LW.LineStyle.Dashed, w = 1) => tradeLines.push(candle.createPriceLine({ price, color, lineWidth: w, lineStyle: style, axisLabelVisible: true, title }));
-      add(res.entry, C.accent, (res.entryType === 'limit' ? 'دخول معلّق' : 'دخول') + (wait ? ' (سيناريو)' : ''), LW.LineStyle.Solid, 2);
+      add(res.entry, C.accent, `${res.side === 'SELL' ? 'بيع' : 'شراء'}${g} — ${res.entryType === 'limit' ? 'دخول معلّق' : 'دخول'}`, LW.LineStyle.Solid, strong ? 3 : 2);
       add(res.stopLoss, C.down, 'وقف الخسارة', LW.LineStyle.Dashed, 2);
       (res.targets || []).forEach((t, i) => add(t, C.up, `هدف ${i + 1}`, LW.LineStyle.Dashed, i === 0 ? 2 : 1));
     }

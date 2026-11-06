@@ -161,7 +161,8 @@ function* backtestSteps(candles, analyzeFn, { start = 150, step = 2, maxHold = 3
     yield i;
     let r;
     try { r = analyzeFn(candles.slice(Math.max(0, i + 1 - window), i + 1)); } catch { i += step; continue; }
-    const dir = r.direction !== 'WAIT' ? r.direction : minGrade === 'B' && r.grade === 'B' ? r.side : null;
+    // minGrade: 'A' الإشارات القوية فقط، 'B' تشمل المتوسطة، 'C' كل التوصيات (لقياس نجاح كل درجة)
+    const dir = r.direction !== 'WAIT' ? r.direction : (minGrade === 'C' || (minGrade === 'B' && r.grade === 'B')) ? r.side : null;
     if (!dir) { i += step; continue; }
     const side = dir === 'BUY' ? 1 : -1;
     // الأوامر المعلقة: يجب أن يصل السعر للدخول خلال 5 شموع
@@ -188,10 +189,15 @@ function* backtestSteps(candles, analyzeFn, { start = 150, step = 2, maxHold = 3
   return list;
 }
 
-function summarizeTrades(list) {
+function statsOf(list) {
   const wins = list.filter((t) => t.R > 0).length;
   const avgR = list.length ? list.reduce((s, t) => s + t.R, 0) / list.length : 0;
-  return { trades: list.length, wins, losses: list.length - wins, winRate: list.length ? Math.round((wins / list.length) * 100) : 0, avgR: +avgR.toFixed(2), list };
+  return { trades: list.length, wins, losses: list.length - wins, winRate: list.length ? Math.round((wins / list.length) * 100) : 0, avgR: +avgR.toFixed(2) };
+}
+function summarizeTrades(list) {
+  // إحصاءات لكل درجة على حدة حتى تُعرف جودة كل توصية
+  const byGrade = Object.fromEntries(['A', 'B', 'C'].map((g) => [g, statsOf(list.filter((t) => t.grade === g))]));
+  return { ...statsOf(list), byGrade, list };
 }
 
 export function backtest(candles, analyzeFn, opts = {}) {
