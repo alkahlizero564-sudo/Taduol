@@ -267,3 +267,25 @@ body.no-scroll { overflow: hidden; }
   background: color-mix(in srgb, var(--chart-bg) 75%, transparent); border-radius: 6px; padding: 2px 6px; direction: ltr; text-align: left; }
 .lw-legend b { font-weight: 700; }
 #chartBig .lw-legend { font-size: 12.5px; }
+
+/* ---- إصلاحات شاشة الشارت ---- */
+.lw-legend { max-width: calc(100% - 150px); white-space: normal; font-size: 11px; line-height: 1.45; background: transparent;
+  text-shadow: 0 0 3px var(--chart-bg), 0 0 3px var(--chart-bg); }
+#chartBig .lw-legend { font-size: 12px; }
+.cf-tfs .chip-btn { padding: .15rem .55rem; font-size: .8rem; }
+.cf-toggles .chip-btn { padding: .1rem .55rem; }
+.cf-toggles label { font-size: .8rem; gap: .2rem; }
+@media (max-width: 700px) {
+  .cf-head { display: grid; grid-template-columns: auto 1fr; gap: .3rem .5rem; }
+  .cf-title { grid-column: 2; text-align: start; }
+  .cf-tfs, .cf-toggles { grid-column: 1 / -1; }
+  .cf-tfs { justify-content: space-between; }
+}
+/* الوضع العرضي: كل الأدوات في صف واحد قابل للتمرير حتى يأخذ الشارت أكبر مساحة */
+@media (max-height: 500px) {
+  .cf-head { display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: .2rem .4rem; gap: .4rem; }
+  .cf-head::-webkit-scrollbar { display: none; }
+  .cf-tfs, .cf-toggles { flex: 0 0 auto; width: auto; margin: 0; flex-wrap: nowrap; }
+  .cf-plan { padding: .2rem .5rem; }
+  .cf-plan .pill { padding: .1rem .45rem; }
+}

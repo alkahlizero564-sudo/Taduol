@@ -9,6 +9,9 @@ import { fmt } from './analysis.js';
 
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const TZ = -new Date().getTimezoneOffset() * 60; // عرض الوقت بتوقيت الجهاز
+const VOL_UP = 'rgba(31,199,135,.22)', VOL_DN = 'rgba(255,84,104,.22)';
+/** عدد الخانات العشرية المناسب للسعر (نفس قاعدة fmt) */
+const decimals = (p) => { const a = Math.abs(p); return a >= 1000 ? 2 : a >= 10 ? 3 : a >= 1 ? 4 : a >= 0.01 ? 5 : 8; };
 const T = (ms) => Math.floor(ms / 1000) + TZ;
 
 function theme() {
@@ -36,7 +39,6 @@ export function createProChart(container, options = {}) {
     crosshair: { mode: LW.CrosshairMode.Normal },
     rightPriceScale: { borderColor: C.grid, scaleMargins: { top: 0.08, bottom: 0.12 } },
     timeScale: { borderColor: C.grid, timeVisible: true, secondsVisible: false, rightOffset: 6, barSpacing: options.fullscreen ? 8 : 7 },
-    localization: { priceFormatter: (p) => fmt(p) },
     handleScroll: { vertTouchDrag: !!options.fullscreen },
   });
 
@@ -48,7 +50,8 @@ export function createProChart(container, options = {}) {
   const e50 = chart.addSeries(LW.LineSeries, lineOpts(C.ema50, 1));
   const e200 = chart.addSeries(LW.LineSeries, lineOpts(C.ema200, 2));
   const vol = chart.addSeries(LW.HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol', priceLineVisible: false, lastValueVisible: false });
-  chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+  chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.86, bottom: 0 } });
+  let precision = -1;
   const markers = LW.createSeriesMarkers(candle, []);
   let rsiS = null, rsiLines = [];
   let tradeLines = [], levelLines = [];
@@ -77,8 +80,8 @@ export function createProChart(container, options = {}) {
     const ind = st.res?.ind;
     const v = (arr) => (ind && arr && arr[idx] != null ? fmt(arr[idx]) : '—');
     legend.innerHTML = `<span>O <b class="${cls}">${fmt(k.o)}</b></span> <span>H <b class="${cls}">${fmt(k.h)}</b></span> <span>L <b class="${cls}">${fmt(k.l)}</b></span> <span>C <b class="${cls}">${fmt(k.c)}</b></span> <b class="${cls}">${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%</b>`
-      + `<br><span style="color:${C.ema20}">EMA20 ${v(ind?.ema20)}</span> <span style="color:${C.ema50}">EMA50 ${v(ind?.ema50)}</span> <span style="color:${C.ema200}">EMA200 ${v(ind?.ema200)}</span>`
-      + (st.opts.rsi && ind?.rsi?.[idx] != null ? ` <span style="color:${C.rsi}">RSI ${ind.rsi[idx].toFixed(1)}</span>` : '');
+      + (options.fullscreen ? `<br><span style="color:${C.ema20}">EMA20 ${v(ind?.ema20)}</span> <span style="color:${C.ema50}">EMA50 ${v(ind?.ema50)}</span> <span style="color:${C.ema200}">EMA200 ${v(ind?.ema200)}</span>`
+        + (st.opts.rsi && ind?.rsi?.[idx] != null ? ` <span style="color:${C.rsi}">RSI ${ind.rsi[idx].toFixed(1)}</span>` : '') : '');
   }
   chart.subscribeCrosshairMove((p) => {
     if (!p || p.time == null) { const n = st.candles.length; legendFor(st.candles[n - 1], n - 1); return; }
@@ -105,7 +108,7 @@ export function createProChart(container, options = {}) {
     // علامة واحدة لكل شمعة بحسب صافي الأنماط عليها
     const net = new Map();
     (st.patterns || []).forEach((p) => {
-      if (!st.candles[p.index] || p.type === 'neutral') return;
+      if (!st.candles[p.index] || p.type === 'neutral' || p.reliability < 2) return;
       net.set(p.index, (net.get(p.index) || 0) + (p.type === 'bullish' ? p.reliability : -p.reliability));
     });
     markers.setMarkers([...net].filter(([, v]) => v !== 0).sort((a, b) => a[0] - b[0]).map(([i, v]) => ({
@@ -145,12 +148,18 @@ export function createProChart(container, options = {}) {
         for (let i = Math.max(0, prev.length - 1); i < candles.length; i++) {
           const k = candles[i];
           candle.update({ time: T(k.t), open: k.o, high: k.h, low: k.l, close: k.c });
-          vol.update({ time: T(k.t), value: k.v || 0, color: k.c >= k.o ? 'rgba(31,199,135,.35)' : 'rgba(255,84,104,.35)' });
+          vol.update({ time: T(k.t), value: k.v || 0, color: k.c >= k.o ? VOL_UP : VOL_DN });
         }
       } else {
+        const d = decimals(candles[candles.length - 1].c);
+        if (d !== precision) {
+          precision = d;
+          const pf = { type: 'price', precision: d, minMove: Math.pow(10, -d) };
+          [candle, e20, e50, e200, bbU, bbL].forEach((sr) => sr.applyOptions({ priceFormat: pf }));
+        }
         candle.setData(candles.map((k) => ({ time: T(k.t), open: k.o, high: k.h, low: k.l, close: k.c })));
         const hasVol = candles.some((k) => k.v);
-        vol.setData(hasVol ? candles.map((k) => ({ time: T(k.t), value: k.v || 0, color: k.c >= k.o ? 'rgba(31,199,135,.35)' : 'rgba(255,84,104,.35)' })) : []);
+        vol.setData(hasVol ? candles.map((k) => ({ time: T(k.t), value: k.v || 0, color: k.c >= k.o ? VOL_UP : VOL_DN })) : []);
         if (st.key !== key) api.reset();
         st.key = key;
       }
