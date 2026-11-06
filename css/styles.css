@@ -310,3 +310,8 @@ body.no-scroll { overflow: hidden; }
 .decision.WEAK .word { color: var(--muted); }
 .grade-hist { background: var(--bg); border-radius: 8px; padding: .35rem .6rem; }
 .bt-box table { margin: .3rem 0; }
+
+/* ---- تبويب الشارت: قائمة الرموز ---- */
+.sym-list { display: flex; flex-wrap: wrap; gap: .35rem; max-height: 180px; overflow-y: auto; margin-top: .5rem; }
+.grid-live { grid-template-columns: 1fr; }
+ 
