@@ -61,7 +61,7 @@ export function createProChart(container, options = {}) {
   legend.className = 'lw-legend';
   container.appendChild(legend);
 
-  const st = { candles: [], res: null, patterns: [], interval: '1h', key: '', opts: { volume: true, rsi: !!options.rsi, levels: true, trade: true } };
+  const st = { candles: [], res: null, patterns: [], interval: '1h', key: '', opts: { volume: true, rsi: !!options.rsi, levels: true, trade: true, scenario: false, history: true }, tradeMarks: [] };
 
   function ensureRsi() {
     if (st.opts.rsi && !rsiS) {
@@ -111,13 +111,23 @@ export function createProChart(container, options = {}) {
       if (!st.candles[p.index] || p.type === 'neutral' || p.reliability < 2) return;
       net.set(p.index, (net.get(p.index) || 0) + (p.type === 'bullish' ? p.reliability : -p.reliability));
     });
-    markers.setMarkers([...net].filter(([, v]) => v !== 0).sort((a, b) => a[0] - b[0]).map(([i, v]) => ({
+    const pat = [...net].filter(([, v]) => v !== 0).map(([i, v]) => ({
       time: T(st.candles[i].t), position: v > 0 ? 'belowBar' : 'aboveBar',
       color: v > 0 ? C.up : C.down, shape: v > 0 ? 'arrowUp' : 'arrowDown', size: 0.9,
-    })));
+    }));
+    // صفقات الاستراتيجية السابقة: ✓ ربحت / ✗ خسرت (من الاختبار التاريخي)
+    const t0 = st.candles.length ? st.candles[0].t : Infinity;
+    const hist = st.opts.history ? (st.tradeMarks || []).filter((m) => m.t >= t0).map((m) => ({
+      time: T(m.t), position: m.side === 'BUY' ? 'belowBar' : 'aboveBar', shape: m.side === 'BUY' ? 'arrowUp' : 'arrowDown',
+      color: m.R > 0 ? C.up : C.down, text: m.R > 0 ? `✓ +${m.R.toFixed(1)}R` : `✗ ${m.R.toFixed(1)}R`, size: 1.3,
+    })) : [];
+    const byTime = new Map();
+    [...pat, ...hist].forEach((m) => byTime.set(m.time + (m.text ? 0.5 : 0), m)); // علامة الصفقة لها أولوية في العرض
+    markers.setMarkers([...byTime.values()].sort((a, b) => a.time - b.time));
     // خطوط الصفقة
     tradeLines.forEach((l) => candle.removePriceLine(l)); tradeLines = [];
-    if (st.opts.trade && res && isFinite(res.entry)) {
+    // خطوط الصفقة تظهر فقط عند وجود إشارة فعلية؛ السيناريو عند "انتظار" يظهر فقط إذا طلبه المستخدم
+    if (st.opts.trade && res && isFinite(res.entry) && (res.direction !== 'WAIT' || st.opts.scenario)) {
       const wait = res.direction === 'WAIT';
       const add = (price, color, title, style = LW.LineStyle.Dashed, w = 1) => tradeLines.push(candle.createPriceLine({ price, color, lineWidth: w, lineStyle: style, axisLabelVisible: true, title }));
       add(res.entry, C.accent, (res.entryType === 'limit' ? 'دخول معلّق' : 'دخول') + (wait ? ' (سيناريو)' : ''), LW.LineStyle.Solid, 2);
@@ -168,6 +178,8 @@ export function createProChart(container, options = {}) {
       legendFor(candles[candles.length - 1], candles.length - 1);
     },
     render() { vol.applyOptions({ visible: st.opts.volume }); drawOverlays(); },
+    /** صفقات الاختبار التاريخي [{t, side, R}] لعرضها على الشارت */
+    setTradeMarks(list) { st.tradeMarks = list || []; drawOverlays(); },
     reset() {
       const n = st.candles.length;
       const show = Math.round(Math.max(40, Math.min(n, container.clientWidth / (options.fullscreen ? 8 : 7))));

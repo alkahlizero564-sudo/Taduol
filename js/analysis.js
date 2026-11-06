@@ -121,6 +121,25 @@ export function analyze(candles, opts = {}) {
     vote('OBV (الحجم)', slope > 0 ? 'يرتفع' : 'ينخفض', slope > 0 ? 0.5 : -0.5, slope > 0 ? 'الحجم يدعم الصعود' : 'الحجم يدعم الهبوط', 0.7);
   }
 
+  // ---- مؤشرات للاطلاع (وزن 0: اختُبرت على بيانات حقيقية ولم تحسّن النتائج خارج العينة، فلا تدخل في القرار) ----
+  const info = (name, value, v, note) => vote(name, value, v, note + ' (للاطلاع)', 0);
+  const kcU = last(ind.kc?.upper), kcL = last(ind.kc?.lower);
+  if (kcU != null) info('Keltner Channels', `${fmt(kcL)} – ${fmt(kcU)}`, price > kcU ? 1 : price < kcL ? -1 : 0, price > kcU ? 'السعر فوق القناة — زخم قوي/ممتد' : price < kcL ? 'السعر تحت القناة — زخم هابط/ممتد' : 'داخل القناة');
+  const dcU = last(ind.dc?.upper), dcL = last(ind.dc?.lower), dcM = last(ind.dc?.mid);
+  if (dcU != null) info('Donchian (20)', `${fmt(dcL)} – ${fmt(dcU)}`, price >= dcU ? 1 : price <= dcL ? -1 : price > dcM ? 0.3 : -0.3, price >= dcU ? 'اختراق أعلى 20 شمعة' : price <= dcL ? 'كسر أدنى 20 شمعة' : price > dcM ? 'فوق منتصف القناة' : 'تحت منتصف القناة');
+  const au = last(ind.aroon?.up), ad = last(ind.aroon?.down);
+  if (au != null) info('Aroon (25)', `↑${au.toFixed(0)} ↓${ad.toFixed(0)}`, au > 70 && au > ad ? 1 : ad > 70 && ad > au ? -1 : 0, au > 70 && au > ad ? 'قمم حديثة — ترند صاعد' : ad > 70 && ad > au ? 'قيعان حديثة — ترند هابط' : 'لا ترند واضح');
+  const rc = last(ind.roc);
+  if (rc != null) info('ROC (10)', rc.toFixed(2) + '%', rc > 0 ? 0.5 : -0.5, rc > 0 ? 'معدل التغير موجب' : 'معدل التغير سالب');
+  const tx = last(ind.trix);
+  if (tx != null) info('TRIX (15)', tx.toFixed(4), tx > 0 ? 0.5 : -0.5, tx > 0 ? 'زخم ثلاثي التنعيم صاعد' : 'زخم ثلاثي التنعيم هابط');
+  const ha = ind.ha?.slice(-3) || [];
+  if (ha.length === 3) { const g = ha.filter((k) => k.c > k.o).length; info('Heikin-Ashi', `${g}/3 خضراء`, g === 3 ? 1 : g === 0 ? -1 : 0, g === 3 ? '3 شموع صاعدة متتالية' : g === 0 ? '3 شموع هابطة متتالية' : 'متذبذب'); }
+  const sq = last(ind.sq);
+  if (sq != null) info('Squeeze (TTM)', sq ? 'انضغاط' : 'منطلق', 0, sq ? 'هدوء — غالباً تتبعه حركة قوية' : 'لا انضغاط');
+  const cm = last(ind.cmf);
+  if (cm != null && candles.some((x) => x.v)) info('Chaikin MF (20)', cm.toFixed(3), cm > 0.05 ? 0.5 : cm < -0.05 ? -0.5 : 0, cm > 0.05 ? 'تدفق أموال داخل' : cm < -0.05 ? 'تدفق أموال خارج' : 'محايد');
+
   // ---- الشموع اليابانية (آخر 5 شموع) ----
   const patternSrc = closedOnly && candles.length > 61 ? candles.slice(0, -1) : candles;
   const patterns = detectPatterns(patternSrc, { lookback: 5 });

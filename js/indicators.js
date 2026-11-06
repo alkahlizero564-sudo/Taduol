@@ -365,6 +365,67 @@ export function bullBear(c, p = 13) {
   return c.map((k, i) => (e[i] == null ? null : (k.h - e[i]) + (k.l - e[i])));
 }
 
+// ---------------- مؤشرات إضافية مشهورة ----------------
+/** قنوات كيلتنر: EMA(20) ± 2×ATR(10) */
+export function keltner(c, p = 20, mult = 2, atrP = 10) {
+  const mid = ema(closes(c), p), a = atr(c, atrP);
+  return { mid, upper: mid.map((m, i) => (m != null && a[i] != null ? m + mult * a[i] : null)), lower: mid.map((m, i) => (m != null && a[i] != null ? m - mult * a[i] : null)) };
+}
+/** قنوات دونشيان: أعلى قمة وأدنى قاع لآخر p شمعة */
+export function donchian(c, p = 20) {
+  const upper = [], lower = [];
+  c.forEach((_, i) => {
+    if (i < p - 1) { upper.push(null); lower.push(null); return; }
+    let hh = -Infinity, ll = Infinity;
+    for (let j = i - p + 1; j <= i; j++) { hh = Math.max(hh, c[j].h); ll = Math.min(ll, c[j].l); }
+    upper.push(hh); lower.push(ll);
+  });
+  return { upper, lower, mid: upper.map((u, i) => (u == null ? null : (u + lower[i]) / 2)) };
+}
+/** أرون: كم مضى منذ أعلى قمة/أدنى قاع خلال p شمعة (100 = الآن) */
+export function aroon(c, p = 25) {
+  const up = [], down = [];
+  c.forEach((_, i) => {
+    if (i < p) { up.push(null); down.push(null); return; }
+    let hi = i, lo = i;
+    for (let j = i - p; j <= i; j++) { if (c[j].h >= c[hi].h) hi = j; if (c[j].l <= c[lo].l) lo = j; }
+    up.push(((p - (i - hi)) / p) * 100); down.push(((p - (i - lo)) / p) * 100);
+  });
+  return { up, down };
+}
+/** معدل التغير ROC (%) */
+export function roc(c, p = 10) { return c.map((k, i) => (i >= p ? ((k.c - c[i - p].c) / c[i - p].c) * 100 : null)); }
+/** TRIX: معدل تغير EMA الثلاثي (%) */
+export function trix(c, p = 15) {
+  const e3 = ema(ema(ema(closes(c), p), p), p);
+  return e3.map((v, i) => (i > 0 && v != null && e3[i - 1] != null ? ((v - e3[i - 1]) / e3[i - 1]) * 100 : null));
+}
+/** شموع هايكن آشي (تنعيم الترند) */
+export function heikinAshi(c) {
+  const out = [];
+  c.forEach((k, i) => {
+    const hc = (k.o + k.h + k.l + k.c) / 4;
+    const ho = i === 0 ? (k.o + k.c) / 2 : (out[i - 1].o + out[i - 1].c) / 2;
+    out.push({ t: k.t, o: ho, c: hc, h: Math.max(k.h, ho, hc), l: Math.min(k.l, ho, hc) });
+  });
+  return out;
+}
+/** تدفق أموال تشايكن CMF (يحتاج حجماً) */
+export function chaikinMF(c, p = 20) {
+  const mfv = c.map((k) => { const r = k.h - k.l; return r ? (((k.c - k.l) - (k.h - k.c)) / r) * (k.v || 0) : 0; });
+  return c.map((_, i) => {
+    if (i < p - 1) return null;
+    let a = 0, b = 0;
+    for (let j = i - p + 1; j <= i; j++) { a += mfv[j]; b += c[j].v || 0; }
+    return b ? a / b : null;
+  });
+}
+/** انضغاط TTM: بولينجر داخل كيلتنر = هدوء يسبق حركة قوية */
+export function squeeze(c) {
+  const bb = bollinger(c, 20, 2), kc = keltner(c, 20, 1.5, 20);
+  return c.map((_, i) => (bb.upper[i] == null || kc.upper[i] == null ? null : bb.upper[i] < kc.upper[i] && bb.lower[i] > kc.lower[i]));
+}
+
 // حساب كل المؤشرات دفعة واحدة
 export function computeAll(c) {
   const cl = closes(c);
@@ -377,6 +438,7 @@ export function computeAll(c) {
       hma9: hma(cl, 9), vwma20: vwma(c, 20),
     },
     ao: awesome(c), mom: momentum(c), stochRsi: stochRsi(c), uo: ultimate(c), bbp: bullBear(c),
+    kc: keltner(c), dc: donchian(c, 20), aroon: aroon(c, 25), roc: roc(c, 10), trix: trix(c, 15), ha: heikinAshi(c), sq: squeeze(c), cmf: chaikinMF(c, 20),
     rsi: rsi(c, 14), macd: macd(c), bb: bollinger(c), atr: atr(c, 14),
     stoch: stochastic(c), adx: adx(c), cci: cci(c), willr: williamsR(c), obv: obv(c), mfi: mfi(c),
     psar: psar(c), supertrend: supertrend(c), ichimoku: ichimoku(c), vwap: vwap(c),

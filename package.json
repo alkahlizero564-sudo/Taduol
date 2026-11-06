@@ -12,7 +12,8 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "@capacitor/cli": "8.5.3"
+    "@capacitor/cli": "8.5.3",
+    "technicalindicators": "^3.1.0"
   },
   "dependencies": {
     "@capacitor/android": "8.5.3",

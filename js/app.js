@@ -188,6 +188,8 @@ function initLive() {
   live.chart = createProChart($('#chart'));
   $$('.chart-tools [data-zoom]').forEach((b) => (b.onclick = () => live.chart.zoom(+b.dataset.zoom)));
   $('.chart-tools [data-reset]').onclick = () => live.chart.reset();
+  const toggleOpt = (btn, key) => { btn.onclick = () => { const on = !live.chart.options[key]; [live.chart, live.big].forEach((ch) => { if (ch) { ch.options[key] = on; ch.render(); } }); btn.classList.toggle('active', on); const cf = { scenario: '#cfScenario', history: '#cfHistory' }[key]; if (cf) $(cf).checked = on; }; };
+  toggleOpt($('#scenarioBtn'), 'scenario'); toggleOpt($('#historyBtn'), 'history');
   $('#chartFullBtn').onclick = openFull;
   initFull();
   try { const a = JSON.parse(store.get('taduol.account', '{}')); live.account = { balance: +a.balance || 0, risk: +a.risk || 1 }; } catch { live.account = { balance: 0, risk: 1 }; }
@@ -447,7 +449,7 @@ function initFull() {
   $$('#cfTfs [data-tf]').forEach((b) => (b.onclick = () => { $('#liveInterval').value = b.dataset.tf; loadLive(); }));
   $('#cfClose').onclick = () => closeFull(false);
   const tog = (id, key) => { $(id).onchange = (e) => { if (live.big) { live.big.options[key] = e.target.checked; live.big.render(); } }; };
-  tog('#cfRsi', 'rsi'); tog('#cfVol', 'volume'); tog('#cfLvl', 'levels'); tog('#cfTrade', 'trade');
+  tog('#cfRsi', 'rsi'); tog('#cfVol', 'volume'); tog('#cfLvl', 'levels'); tog('#cfTrade', 'trade'); tog('#cfScenario', 'scenario'); tog('#cfHistory', 'history');
   $$('[data-cfzoom]').forEach((b) => (b.onclick = () => live.big?.zoom(+b.dataset.cfzoom)));
   $('#cfReset').onclick = () => live.big?.reset();
   // زر الرجوع في Android يغلق الشاشة الكاملة بدل الخروج من التطبيق
@@ -457,7 +459,12 @@ function openFull() {
   if (!live.candles) { $('#liveStatus').innerHTML = '<span class="muted">اضغط "تحليل" أولاً لتحميل الشارت.</span>'; return; }
   $('#chartFull').hidden = false;
   document.body.classList.add('no-scroll');
-  if (!live.big) live.big = createProChart($('#chartBig'), { fullscreen: true, rsi: true });
+  if (!live.big) {
+    live.big = createProChart($('#chartBig'), { fullscreen: true, rsi: true });
+    live.big.options.scenario = live.chart.options.scenario; live.big.options.history = live.chart.options.history;
+    $('#cfScenario').checked = live.big.options.scenario; $('#cfHistory').checked = live.big.options.history;
+  }
+  if (live.btMarks) live.big.setTradeMarks(live.btMarks);
   history.pushState({ chartFull: 1 }, '');
   renderChart();
 }
@@ -500,6 +507,7 @@ function renderPlan() {
   const waitNote = dir !== 'WAIT' ? '' : r.grade === 'B'
     ? `<p class="small muted">إعداد متوسط (B) نحو ال${sideWord}: الخطة أدناه للاطلاع فقط — لم يجتز شروط الدرجة A (في الاختبار التاريخي كانت إعدادات B خاسرة في المتوسط).</p>`
     : `<p class="small muted">لا توجد صفقة جيدة الآن. الأرقام أدناه سيناريو ${sideWord} محتمل فقط — انتظر توافق الترند مع هيكل السوق.</p>`;
+  const hiddenNote = dir === 'WAIT' && !live.chart?.options.scenario ? '<p class="small muted">📍 خطوط الصفقة مخفية على الشارت لأنه لا توجد إشارة — لعرض السيناريو اضغط «👁 سيناريو».</p>' : '';
   const acct = live.account || { balance: 0, risk: 1 };
   const isFx = !isBinanceSymbol(live.symbol);
   const qty = acct.balance > 0 && r.risk > 0 ? (acct.balance * acct.risk / 100) / r.risk : 0;
@@ -512,6 +520,7 @@ function renderPlan() {
           : 'لم تظهر إشارات A في هذه الفترة.'}
         ${bt.trades && bt.trades < 10 ? '<br><span class="muted">⚠️ عدد الصفقات قليل — النتيجة غير موثوقة إحصائياً.</span>' : ''}
         ${bt.trades >= 10 && bt.avgR <= 0 ? '<br><span class="down">⚠️ الاستراتيجية لم تكن مربحة على هذا الرمز/الفريم — كن حذراً أو جرّب فريماً آخر.</span>' : ''}
+        ${bt.trades ? '<br><span class="small">✓✗ هذه الصفقات مرسومة على الشارت (أخضر = ربحت، أحمر = خسرت).</span>' : ''}
         <br><span class="muted small">النتائج السابقة لا تضمن المستقبل، ولا تشمل السبريد والعمولات.</span></div>`;
   $('#tradePlan').innerHTML = `
     <h3>خطة التداول — ${esc(live.symbol)} <span class="grade ${r.grade}" title="درجة الصفقة">${r.grade}</span></h3>
@@ -520,7 +529,7 @@ function renderPlan() {
       <div class="meter"><div class="small">التوافق ${Math.round(r.confluence * 100)}% · الثقة ${r.confidence}%</div><div class="bar"><div class="fill" style="width:${r.confidence}%"></div></div></div>
     </div>
     ${live.pending ? `<p class="pending-note">⏳ إشارة جديدة (${DIR_AR[live.pending.dir]}) قيد التأكيد — يجب أن تستمر 20 ثانية (${Math.min(20, Math.round((Date.now() - live.pending.since) / 1000))}/20)</p>` : ''}
-    ${waitNote}
+    ${waitNote}${hiddenNote}
     <div class="levels">
       <div class="level"><span>${r.entryType === 'limit' ? 'دخول بأمر معلّق (Limit)' : 'دخول فوري'}</span><b>${fmt(r.entry)}</b><span>منطقة: ${fmt(r.entryZone[0])} – ${fmt(r.entryZone[1])}</span></div>
       <div class="level sl"><span>وقف الخسارة (خلف ${r.side === 'BUY' ? 'آخر قاع' : 'آخر قمة'})</span><b>${fmt(r.stopLoss)}</b><span>المخاطرة: ${fmt(r.risk)}</span></div>
@@ -563,6 +572,7 @@ async function loadHTF() {
 async function runBacktest() {
   const sym = live.symbol, iv = live.interval;
   live.bt = { status: 'loading' };
+  live.btMarks = []; live.chart?.setTradeMarks([]); live.big?.setTradeMarks([]);
   renderPlan();
   try {
     let c = live.candles;
@@ -574,7 +584,12 @@ async function runBacktest() {
     const bt = await backtestAsync(c, (sl) => analyze(sl, { htf: htfAt(sl[sl.length - 1].t) }), { start: Math.min(300, Math.floor(c.length / 2)), step: 2, minGrade: 'A' }, (p) => {
       if (p - lastP > 0.1 && sym === live.symbol) { lastP = p; live.bt = { status: 'loading', p }; renderPlan(); }
     });
-    if (sym === live.symbol && iv === live.interval) { live.bt = { status: 'done', ...bt, bars: c.length }; renderPlan(); }
+    if (sym === live.symbol && iv === live.interval) {
+      live.bt = { status: 'done', ...bt, bars: c.length };
+      live.btMarks = bt.list.map((t) => ({ t: c[t.at].t, side: t.side, R: t.R }));
+      live.chart?.setTradeMarks(live.btMarks); live.big?.setTradeMarks(live.btMarks);
+      renderPlan();
+    }
   } catch (e) {
     if (sym === live.symbol) { live.bt = { status: 'error', msg: e.message }; renderPlan(); }
   }
