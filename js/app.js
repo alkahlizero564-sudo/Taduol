@@ -17,6 +17,7 @@ import { SmartWebSocket, NativeWebSocket, nativeSocketsAvailable } from './nativ
 import { openStream, applyTick, applyKline } from './stream.js';
 import { getTiingoKey, setTiingoKey, testTiingoKey, tiingoUsage, tiingoTop, toTiingoTicker, parseQuote, probeWebSocket, subscribeMessage, TIINGO_WS } from './tiingo.js';
 import { exampleSeries } from './examples.js';
+import { loadBinanceSymbols } from './symbols.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -53,7 +54,8 @@ function initTabs() {
     if (name === 'markets' && !markets.loaded) loadMarkets();
     else if (name === 'markets' && getTiingoKey() && !fxWatch.ws) loadTiingoTickers();
     if (name === 'library') renderLibrary();
-    if (name === 'live' && live.candles) renderChart();
+    if (name === 'chart' && !live.candles) loadLive();
+    if ((name === 'live' || name === 'chart') && live.candles) setTimeout(renderChart, 50);
   };
   $$('.tab').forEach((b) => (b.onclick = () => open(b.dataset.tab)));
   open(store.get('taduol.tab', 'image'));
@@ -1103,6 +1105,30 @@ function readSlot(el) {
 }
 
 // =====================================================================
+//  تبويب الشارت: قائمة الرموز (كل عملات Binance + الفوركس والذهب والأسهم)
+// =====================================================================
+function initChartTab() {
+  let all = TD_SYMBOLS.map((x) => ({ s: x.s, n: x.n, g: x.s.includes('/') ? 'fx' : 'stocks' }));
+  const box = $('#symList'), q = $('#symSearch'), g = $('#symGroup');
+  const draw = () => {
+    const raw = q.value.trim(), t = raw.toUpperCase().replace('/', '');
+    const list = all.filter((x) => (g.value === 'all' || x.g === g.value) && (!t || x.s.replace('/', '').includes(t) || (x.n || '').includes(raw))).slice(0, 150);
+    box.innerHTML = list.map((x) => `<button class="chip-btn${x.s === live.symbol ? ' active' : ''}" data-s="${esc(x.s)}">${esc(x.s.replace(/USDT$/, ''))}</button>`).join('') || '<span class="muted small">لا نتائج</span>';
+  };
+  box.onclick = (e) => { const b = e.target.closest('[data-s]'); if (!b) return; $('#liveSymbol').value = b.dataset.s; loadLive(); draw(); };
+  q.addEventListener('input', draw); g.addEventListener('change', draw);
+  $('#chTfs').innerHTML = INTERVALS.map((iv) => `<button class="chip-btn" data-tf="${iv}">${iv}</button>`).join('');
+  $('#chTfs').onclick = (e) => { const b = e.target.closest('[data-tf]'); if (b) { $('#liveInterval').value = b.dataset.tf; loadLive(); } };
+  const setAll = (rows) => {
+    all = [...rows.map((s) => ({ s, n: '', g: 'crypto' })), ...all];
+    $('#symbolList').innerHTML = all.map((x) => `<option value="${esc(x.s)}">${esc(x.n)}</option>`).join('');
+    draw();
+  };
+  loadBinanceSymbols().then(setAll).catch(() => setAll(SYMBOLS.map((x) => x.s)));
+  draw();
+}
+
+// =====================================================================
 fillSelectors();
 initTheme();
 initImage();
@@ -1112,4 +1138,5 @@ initLibrary();
 initKeys();
 updateKeysBadge();
 initTabs();
+initChartTab();
 if (!activeSlots().length) $('#keysBadge').title = 'أضف مفتاحاً من تبويب المفاتيح';
