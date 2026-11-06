@@ -254,3 +254,72 @@ export function makeHtfLookup(candles, ltf, ratingFn) {
     return cache.get(lo);
   };
 }
+
+// =====================================================================
+//  🏆 لجنة الخبراء: مراجعة أرقام خبير الذكاء الاصطناعي + القرار النهائي
+// =====================================================================
+const num = (v) => (typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/[^\d.\-]/g, '')));
+
+/**
+ * مراجع الأمان: يتحقق من منطق الدخول/الوقف/الأهداف ويصلح ما يمكن إصلاحه
+ * @returns {{status:'ok'|'fixed'|'rejected'|'wait', side, entry, entryType, stopLoss, targets, risk, riskReward, notes:string[]}}
+ */
+export function reviewExpertPlan(ai, { price, atr }) {
+  const notes = [];
+  const dec = String(ai?.decision || '').toUpperCase();
+  if (dec !== 'BUY' && dec !== 'SELL') return { status: 'wait', notes: ['الخبير يرى الانتظار'] };
+  const s = dec === 'BUY' ? 1 : -1;
+  let status = 'ok';
+  let entry = num(ai.entry);
+  const limit = /معل|limit/i.test(String(ai.entry_type || ''));
+  if (!isFinite(entry)) { entry = price; notes.push('لم يحدد الخبير سعر دخول — استخدمنا السعر الحالي'); status = 'fixed'; }
+  const dist = Math.abs(entry - price) / atr;
+  if (dist > (limit ? 3 : 1.5)) return { status: 'rejected', notes: [`سعر الدخول بعيد جداً عن السعر الحالي (${dist.toFixed(1)}×ATR)`] };
+  let sl = num(ai.stop_loss);
+  if (!isFinite(sl) || (entry - sl) * s <= 0) return { status: 'rejected', notes: ['وقف الخسارة في الاتجاه الخاطئ أو غير محدد'] };
+  let risk = Math.abs(entry - sl);
+  if (risk < 0.6 * atr) { risk = 0.8 * atr; sl = entry - s * risk; notes.push('الوقف كان ضيقاً جداً (يُضرب بسهولة بالتذبذب العادي) — وسّعناه إلى 0.8×ATR'); status = 'fixed'; }
+  if (risk > 4 * atr) return { status: 'rejected', notes: [`الوقف بعيد جداً (${(risk / atr).toFixed(1)}×ATR) — مخاطرة كبيرة`] };
+  let targets = (Array.isArray(ai.take_profits) ? ai.take_profits : []).map(num).filter((t) => isFinite(t) && (t - entry) * s > 0).sort((a, b) => (a - b) * s);
+  if (!targets.length) { targets = [entry + s * 1.5 * risk]; notes.push('لا توجد أهداف صالحة — أضفنا هدفاً عند 1.5R'); status = 'fixed'; }
+  let rr = Math.abs(targets[0] - entry) / risk;
+  if (rr < 1.5 - 1e-9) {
+    // الحد الأدنى للعائد/المخاطرة 1.5 (نفس شرط المحرك والتعليمات المعطاة للخبير)
+    const far = targets.filter((t) => Math.abs(t - entry) / risk >= 1.5);
+    if (far.length && Math.abs(far[0] - entry) / risk <= 3) { targets = far; notes.push('الهدف الأول قريب جداً بالنسبة للوقف — اعتمدنا الهدف التالي كهدف أول'); }
+    else { targets = [entry + s * 1.5 * risk, ...far]; notes.push(`العائد/المخاطرة كان ${rr.toFixed(2)} فقط — رفعنا الهدف الأول إلى 1.5R`); }
+    status = 'fixed';
+    rr = Math.abs(targets[0] - entry) / risk;
+  }
+  // إكمال الأهداف إلى ثلاثة: كل هدف إضافي أبعد من السابق بـ 1.5R على الأقل
+  while (targets.length < 3) {
+    const lastR = Math.abs(targets[targets.length - 1] - entry) / risk;
+    targets.push(entry + s * risk * Math.max(lastR + 1.5, targets.length === 1 ? 2.5 : 4));
+  }
+  return { status, side: dec, entry, entryType: limit ? 'limit' : 'market', stopLoss: sl, targets: targets.slice(0, 3), risk, riskReward: +rr.toFixed(2), notes };
+}
+
+/**
+ * القرار النهائي للجنة: خبير الذكاء الاصطناعي + المحرك الفني (+ الفريم الأكبر داخله) + الأخبار
+ * @returns {{level:'strong'|'weak'|'wait', title:string, reasons:string[], plan:Object|null}}
+ */
+export function committeeVerdict(ai, review, engine) {
+  const reasons = [];
+  if (ai?.news?.high_impact_soon === true) {
+    const ev = (ai.news.upcoming_events || []).find((e) => /عالي|high/i.test(String(e.impact)));
+    return { level: 'wait', title: '⛔ انتظر — خبر قوي قريب', reasons: [`حدث عالي التأثير قريب${ev ? ': ' + ev.event + (ev.time_utc ? ' (' + ev.time_utc + ' UTC)' : '') : ''} — قد يضرب أي وقف خسارة`], plan: null };
+  }
+  if (review.status === 'wait') return { level: 'wait', title: '⏸ انتظار', reasons: ['خبير الذكاء الاصطناعي لا يرى صفقة جيدة الآن'], plan: null };
+  if (review.status === 'rejected') return { level: 'wait', title: '⛔ رفض مراجع الأمان التوصية', reasons: review.notes, plan: null };
+  const agreeSide = engine?.side === review.side;
+  if (!agreeSide) {
+    return { level: 'wait', title: '⚠️ تعارض بين الخبراء — الأفضل الانتظار', reasons: [`الذكاء الاصطناعي يرى ${review.side === 'BUY' ? 'شراء' : 'بيع'} بينما المحرك الفني يميل لل${engine?.side === 'BUY' ? 'شراء' : 'بيع'}`], plan: review };
+  }
+  reasons.push(`الذكاء الاصطناعي والمحرك الفني متفقان على ${review.side === 'BUY' ? 'الشراء ⬆' : 'البيع ⬇'}`);
+  if (engine.grade === 'A') {
+    reasons.push('المحرك الفني: إعداد درجة A (الترند + هيكل السوق + الفريم الأكبر)');
+    return { level: 'strong', title: `✅ توصية مؤكدة: ${review.side === 'BUY' ? 'شراء' : 'بيع'}`, reasons, plan: review };
+  }
+  reasons.push(`المحرك الفني: إعداد درجة ${engine.grade} فقط — ليست كل الشروط متوفرة`);
+  return { level: 'weak', title: `⚠️ توصية ضعيفة: ${review.side === 'BUY' ? 'شراء' : 'بيع'} — بحجم صغير أو انتظر`, reasons, plan: review };
+}

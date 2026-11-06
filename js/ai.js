@@ -344,6 +344,90 @@ export async function analyzeChartImage(img, opts = {}) {
   throw new Error('فشلت كل المفاتيح:\n' + errors.join('\n'));
 }
 
+// =====================================================================
+//  🏆 خبير التوصيات (عضو لجنة الخبراء): يرى الشارت + بيانات المحرك + يبحث في الأخبار الآن
+// =====================================================================
+const EXPERT_SYSTEM = `أنت كبير المتداولين في صندوق تحوط عالمي، وخبير في الشموع اليابانية والتحليل الفني وتحليل الأخبار والاقتصاد الكلي.
+مهمتك: توصية تداول واحدة دقيقة ومنضبطة للأصل المطلوب الآن.
+
+خطوات إلزامية:
+1. ابحث في الويب عن آخر أخبار هذا الأصل خلال 24 ساعة (البنوك المركزية، التضخم، الوظائف، الجيوسياسة، تدفقات العملات الرقمية...).
+2. ابحث عن الأحداث الاقتصادية عالية التأثير خلال الـ 24 ساعة القادمة التي تخص هذا الأصل، مع أوقاتها بتوقيت UTC.
+3. اقرأ صورة الشارت وبيانات المحرك الفني المرفقة (الأنماط، المؤشرات، هيكل السوق، الفريم الأكبر، الاختبار التاريخي).
+4. قرر: BUY أو SELL أو WAIT.
+
+قواعد صارمة:
+- إذا كان هناك حدث عالي التأثير خلال ساعتين، أو تعارض الأخبار مع الفني، أو كان السوق عرضياً بلا ميزة واضحة: WAIT.
+- الدخول واقعي: قريب من السعر الحالي، أو أمر معلّق عند منطقة ارتداد واضحة.
+- وقف الخسارة خلف مستوى يُبطل الفكرة (قاع/قمة هيكلية) وليس رقماً عشوائياً، وبين 0.8 و3 أضعاف ATR تقريباً.
+- الهدف الأول بعائد/مخاطرة لا يقل عن 1.5، والأهداف عند مستويات حقيقية.
+- لا تبالغ في الثقة؛ السوق احتمالات.
+- اكتب بالعربية. أعد JSON فقط.`;
+
+const EXPERT_SHAPE = `{
+  "decision": "BUY|SELL|WAIT",
+  "will_rise": "نعم|لا|غير مؤكد",
+  "confidence": رقم 0-100,
+  "entry": رقم, "entry_type": "فوري|أمر معلّق", "entry_zone": [أدنى, أعلى],
+  "stop_loss": رقم, "take_profits": [هدف1, هدف2, هدف3], "risk_reward": رقم,
+  "valid_for": "مدة صلاحية التوصية (مثل: 4 ساعات)",
+  "news": { "sentiment": "إيجابي|سلبي|محايد", "summary": "", "headlines": [{"title": "", "impact": "إيجابي|سلبي|محايد", "source": ""}],
+            "upcoming_events": [{"event": "", "time_utc": "", "impact": "عالي|متوسط|منخفض"}], "high_impact_soon": true/false },
+  "technical_summary": "", "reasons": ["سبب 1", "سبب 2"], "invalidation": "متى تُلغى الفكرة", "warnings": []
+}`;
+
+async function expertWithSlot(slot, img, ctx) {
+  const prompt = `${ctx}\n\nأعطني توصيتك بهذا الشكل بالضبط (JSON صالح):\n${EXPERT_SHAPE}`;
+  let text;
+  if (slot.provider === 'claude') {
+    const type = CLAUDE_WEB_SEARCH_NEW.has(slot.model) ? 'web_search_20260209' : 'web_search_20250305';
+    text = await claudeCall(slot, {
+      system: EXPERT_SYSTEM,
+      content: [{ type: 'image', source: { type: 'base64', media_type: img.mime, data: img.data } }, { type: 'text', text: prompt }],
+      tools: [{ type, name: 'web_search', max_uses: 5 }],
+      effort: 'high',
+    });
+  } else {
+    text = await geminiCall(slot, { system: EXPERT_SYSTEM, parts: [{ inline_data: { mime_type: img.mime, data: img.data } }, { text: prompt }], search: true });
+  }
+  return { ...extractJSON(text), _provider: slot.provider, _model: slot.model, _slot: slot.index + 1 };
+}
+
+/** تشغيل دالة على مفاتيح المستخدم: مفتاح واحد مع التبديل عند الفشل، أو كل المفاتيح ودمج النتائج */
+async function runAcrossSlots(fn, opts = {}) {
+  const slots = activeSlots();
+  if (!slots.length) throw new Error('أضف مفتاح API واحداً على الأقل في صفحة "المفاتيح"');
+  const log = opts.onProgress || (() => {});
+  const errors = [];
+  if (opts.mode === 'consensus' && slots.length > 1) {
+    log(`لجنة من ${slots.length} نماذج تعمل معاً...`);
+    const results = await Promise.allSettled(slots.map((s) => fn(s)));
+    const ok = [];
+    results.forEach((r, i) => { if (r.status === 'fulfilled') ok.push(r.value); else errors.push(`خانة ${slots[i].index + 1}: ${r.reason?.message}`); });
+    if (!ok.length) throw new Error('فشلت كل المفاتيح:\n' + errors.join('\n'));
+    return { result: mergeResults(ok), individual: ok, errors };
+  }
+  for (const s of slots) {
+    try {
+      log(`${s.provider === 'claude' ? 'Claude' : 'Gemini'} (${s.model}) يحلل الشارت ويبحث في الأخبار الآن...`);
+      const r = await fn(s);
+      return { result: r, individual: [r], errors };
+    } catch (e) {
+      errors.push(`خانة ${s.index + 1}: ${e.message}`);
+      log(`فشلت خانة ${s.index + 1}: ${e.message} — تجربة المفتاح التالي...`);
+    }
+  }
+  throw new Error('فشلت كل المفاتيح:\n' + errors.join('\n'));
+}
+
+/**
+ * @param {{data,mime}} img صورة الشارت
+ * @param {{context:string, mode?:'failover'|'consensus', onProgress?}} opts
+ */
+export function expertRecommendation(img, opts = {}) {
+  return runAcrossSlots((s) => expertWithSlot(s, img, opts.context || ''), opts);
+}
+
 const median = (arr) => {
   const a = arr.filter((x) => typeof x === 'number' && isFinite(x)).sort((x, y) => x - y);
   if (!a.length) return null;
@@ -373,6 +457,8 @@ export function mergeResults(list) {
     candlestick_patterns: dedupe(list.flatMap((r) => r.candlestick_patterns || []), (p) => p.name_en || p.name_ar),
     chart_patterns: dedupe(list.flatMap((r) => r.chart_patterns || []), (p) => p.name),
     warnings: [...new Set(list.flatMap((r) => r.warnings || []))],
+    reasons: [...new Set(list.flatMap((r) => r.reasons || []))],
+    news: base.news ? { ...base.news, high_impact_soon: list.some((r) => r.news?.high_impact_soon === true) } : base.news,
     summary: `اتفاق ${agree.length} من ${list.length} نماذج على ${decision}. ` + (base.summary || ''),
     _provider: 'consensus', _model: list.map((r) => r._model).join(' + '), _agreement: agreement,
   };

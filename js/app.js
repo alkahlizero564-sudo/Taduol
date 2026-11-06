@@ -8,11 +8,11 @@ import { technicalRating, RATING_LABELS } from './rating.js';
 import { getForexFallback, getCandles, getLatestCandles, mergeCandles, isTiingoSymbol, getTickers, getForex, getNews, SYMBOLS, INTERVALS, TD_SYMBOLS, tdWatchlist, tdQuotes, getTwelveKeys, setTwelveKeys, testTwelveKey, tdPool, isBinanceSymbol, normalizeTDSymbol } from './market.js';
 import {
   loadSlots, saveSlots, resolveSlot, activeSlots, detectProvider, testSlot, SLOT_COUNT,
-  CLAUDE_MODELS, GEMINI_MODELS, listGeminiModels, saveGeminiModelList, loadGeminiModelList, analyzeChartImage, fileToBase64, aiMarketNews,
+  CLAUDE_MODELS, GEMINI_MODELS, expertRecommendation, listGeminiModels, saveGeminiModelList, loadGeminiModelList, analyzeChartImage, fileToBase64, aiMarketNews,
 } from './ai.js';
 import { drawMini } from './chart.js';
 import { createProChart } from './lwchart.js';
-import { backtestAsync, makeHtfLookup, HIGHER_TF } from './strategy.js';
+import { backtestAsync, makeHtfLookup, HIGHER_TF, reviewExpertPlan, committeeVerdict } from './strategy.js';
 import { SmartWebSocket, NativeWebSocket, nativeSocketsAvailable } from './nativews.js';
 import { openStream, applyTick, applyKline } from './stream.js';
 import { getTiingoKey, setTiingoKey, testTiingoKey, tiingoUsage, tiingoTop, toTiingoTicker, parseQuote, probeWebSocket, subscribeMessage, TIINGO_WS } from './tiingo.js';
@@ -184,7 +184,7 @@ function initLive() {
   const sel = $('#refreshEvery');
   sel.value = store.get('taduol.refreshEvery', '10');
   sel.onchange = () => { store.set('taduol.refreshEvery', sel.value); scheduleRefresh(); startStream(); };
-  $('#liveAiBtn').onclick = runLiveAI;
+  $('#liveAiBtn').onclick = runExpert;
   live.chart = createProChart($('#chart'));
   $$('.chart-tools [data-zoom]').forEach((b) => (b.onclick = () => live.chart.zoom(+b.dataset.zoom)));
   $('.chart-tools [data-reset]').onclick = () => live.chart.reset();
@@ -428,7 +428,11 @@ function renderMTF() {
 }
 
 function renderChart({ light = false } = {}) {
-  const res = live.stableRes || live.res;
+  const base = live.stableRes || live.res;
+  const ex = live.expert;
+  const res = ex?.show && ex.sym === live.symbol && ex.verdict?.plan
+    ? { ...base, direction: ex.verdict.level === 'wait' ? 'WAIT' : ex.verdict.plan.side, ...ex.verdict.plan }
+    : base;
   live.chart?.setData(live.candles, res, live.recentPatterns, live.interval);
   if (live.big && !$('#chartFull').hidden) {
     live.big.setData(live.candles, res, live.recentPatterns, live.interval);
@@ -464,7 +468,11 @@ function closeFull(fromPop) {
 }
 function renderFullHead() {
   if ($('#chartFull').hidden || !live.candles) return;
-  const r = live.stableRes || live.res, dir = live.stable || r.direction;
+  const ex = live.expert;
+  const useEx = ex?.show && ex.sym === live.symbol && ex.verdict?.plan;
+  const base = live.stableRes || live.res;
+  const r = useEx ? { ...base, ...ex.verdict.plan } : base;
+  const dir = useEx ? (ex.verdict.level === 'wait' ? 'WAIT' : ex.verdict.plan.side) : live.stable || r.direction;
   const price = live.candles[live.candles.length - 1].c;
   $('#cfSymbol').textContent = `${live.symbol} · ${live.interval}`;
   $('#cfPrice').textContent = fmt(price);
@@ -472,6 +480,7 @@ function renderFullHead() {
   $$('#cfTfs [data-tf]').forEach((b) => b.classList.toggle('active', b.dataset.tf === live.interval));
   const L = r.rating ? RATING_LABELS[r.rating.label] : null;
   $('#cfPlan').innerHTML = [
+    live.expert?.sym === live.symbol ? `<span class="pill ${live.expert.verdict.level === 'strong' ? 'BUY' : live.expert.verdict.level === 'weak' ? 'WAIT' : ''}">🏆 ${esc(live.expert.verdict.title)}</span>` : '',
     `<span class="pill ${dir}">${DIR_AR[dir]} <span class="grade ${r.grade}">${r.grade}</span></span>`,
     `<span class="pill">${r.entryType === 'limit' ? 'معلّق' : 'دخول'} <b>${fmt(r.entry)}</b></span>`,
     `<span class="pill down">وقف <b>${fmt(r.stopLoss)}</b></span>`,
@@ -594,22 +603,90 @@ function renderLevels() {
     <p class="small muted">نقاط الارتكاز: ${Object.entries(r.pivots).map(([k, v]) => `${k} ${fmt(v)}`).join(' · ')}</p>`;
 }
 
-async function runLiveAI() {
+/** السياق الكامل الذي يُرسل لخبير الذكاء الاصطناعي */
+function expertContext() {
+  const r = live.res, sr = live.stableRes || r;
+  const mtf = Object.entries(live.mtf || {}).filter(([, m]) => m?.rating).map(([f, m]) => `${f}: ${m.rating.label} (${m.rating.overall})`).join(' | ');
+  const bt = live.bt?.status === 'done' ? `${live.bt.trades} صفقة، نجاح ${live.bt.winRate}%، متوسط ${live.bt.avgR}R` : 'غير متاح';
+  return [
+    `الأصل: ${live.symbol} | الفريم: ${live.interval} | السعر الحالي: ${fmt(live.candles[live.candles.length - 1].c)} | الوقت الآن: ${new Date().toISOString()} (UTC)`,
+    summaryForAI(sr, live.symbol, live.interval),
+    `الفريم الأكبر (${HIGHER_TF[live.interval] || '—'}): ${live.htf?.label || 'غير متاح'} (${live.htf?.score ?? '—'})`,
+    `تقييم الفريمات: ${mtf || 'غير متاح'}`,
+    `الاختبار التاريخي لاستراتيجية المحرك على هذا الرمز/الفريم: ${bt}`,
+    'أنماط الشموع (آخر 30 شمعة): ' + live.recentPatterns.map((p) => `${p.en}@-${live.candles.length - 1 - p.index}`).join(', '),
+    'آخر 40 شمعة (o,h,l,c): ' + live.candles.slice(-40).map((k) => `${fmt(k.o)},${fmt(k.h)},${fmt(k.l)},${fmt(k.c)}`).join(' | '),
+  ].join('\n');
+}
+
+/** 🏆 لجنة الخبراء: خبير الذكاء الاصطناعي (مع البحث في الأخبار) + المحرك الفني + مراجع الأمان */
+async function runExpert() {
   if (!live.candles) { await loadLive(); if (!live.candles) return; }
   const card = $('#liveAiCard'), box = $('#liveAi');
-  card.hidden = false; box.innerHTML = '<div class="progress"><span class="spinner"></span> جاري إرسال الشارت والمؤشرات للذكاء الاصطناعي...</div>';
+  card.hidden = false;
+  card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const sym = live.symbol;
+  box.innerHTML = '<div class="progress"><span class="spinner"></span> الخبراء يحللون الشارت ويبحثون في الأخبار الآن (قد يستغرق دقيقة)...</div>';
+  $('#liveAiBtn').disabled = true;
   try {
     const url = live.chart.screenshot().toDataURL('image/png');
-    const data = { data: url.slice(url.indexOf(',') + 1), mime: 'image/png' };
-    const ctx = summaryForAI(live.res, live.symbol, live.interval) +
-      '\nأنماط الشموع (آخر 30 شمعة): ' + live.recentPatterns.map((p) => `${p.en}@-${live.candles.length - 1 - p.index}`).join(', ') +
-      '\nآخر 30 شمعة (o,h,l,c): ' + live.candles.slice(-30).map((k) => `${fmt(k.o)},${fmt(k.h)},${fmt(k.l)},${fmt(k.c)}`).join(' | ');
+    const img = { data: url.slice(url.indexOf(',') + 1), mime: 'image/png' };
     const mode = activeSlots().length > 1 ? $('input[name="mode"]:checked').value : 'failover';
-    const out = await analyzeChartImage(data, { mode, liveContext: ctx, note: `الأصل ${live.symbol} على فريم ${live.interval}. الأسعار المرسومة على يمين الشارت حقيقية.`, onProgress: (m) => { box.innerHTML = `<div class="progress"><span class="spinner"></span> ${esc(m)}</div>`; } });
-    renderAIResult(box, out);
+    const out = await expertRecommendation(img, { context: expertContext(), mode, onProgress: (m) => { box.innerHTML = `<div class="progress"><span class="spinner"></span> ${esc(m)}</div>`; } });
+    if (sym !== live.symbol) return;
+    const engine = live.stableRes || live.res;
+    const price = live.candles[live.candles.length - 1].c;
+    const review = reviewExpertPlan(out.result, { price, atr: engine.atr });
+    const verdict = committeeVerdict(out.result, review, engine);
+    live.expert = { sym, ai: out.result, review, verdict, at: Date.now(), show: verdict.level !== 'wait', individual: out.individual, errors: out.errors, price };
+    renderExpert(); renderChart();
   } catch (e) {
     box.innerHTML = `<div class="progress error">❌ ${esc(e.message)}</div>`;
-  }
+  } finally { $('#liveAiBtn').disabled = false; }
+}
+
+function renderExpert() {
+  const ex = live.expert, box = $('#liveAi');
+  if (!ex) return;
+  const { ai, review, verdict } = ex;
+  const engine = live.stableRes || live.res;
+  const p = verdict.plan;
+  const R = (t) => (p ? (Math.abs(t - p.entry) / p.risk).toFixed(1) : '');
+  const age = Math.round((Date.now() - ex.at) / 60000);
+  const sideAr = (s) => (s === 'BUY' ? 'شراء ⬆' : s === 'SELL' ? 'بيع ⬇' : 'انتظار');
+  const provider = ai._provider === 'consensus' ? `لجنة ${ex.individual.length} نماذج (اتفاق ${ai._agreement}%)` : `${ai._provider === 'claude' ? 'Claude' : 'Gemini'} — ${esc(ai._model)}`;
+  const news = ai.news || {};
+  box.innerHTML = `
+    <div class="verdict ${verdict.level}">
+      <div class="vt">${esc(verdict.title)}</div>
+      <ul class="factors">${verdict.reasons.map((r) => `<li>• ${esc(r)}</li>`).join('')}</ul>
+      <div class="small muted">منذ ${age ? age + ' دقيقة' : 'لحظات'} · السعر وقتها ${fmt(ex.price)}${ai.valid_for ? ' · صالحة لمدة: ' + esc(ai.valid_for) : ''}</div>
+    </div>
+    <div class="members">
+      <div class="member"><b>🤖 خبير الذكاء الاصطناعي</b>${sideAr(review.side || 'WAIT')} · ثقة ${esc(ai.confidence ?? '—')}%<br><span class="muted small">${provider}</span></div>
+      <div class="member"><b>📊 المحرك الفني</b>${sideAr(engine.side)} · درجة ${engine.grade}<br><span class="muted small">${engine.direction === 'WAIT' ? 'لا إشارة A الآن' : 'إشارة A'}</span></div>
+      <div class="member"><b>🛡️ مراجع الأمان</b>${review.status === 'ok' ? '✓ الأرقام سليمة' : review.status === 'fixed' ? '✎ صحّح بعض الأرقام' : review.status === 'rejected' ? '✗ رفض الأرقام' : '—'}</div>
+      <div class="member"><b>📰 الأخبار</b>${esc(news.sentiment || '—')}${news.high_impact_soon ? '<br><span class="down">⚠ حدث قوي قريب</span>' : ''}</div>
+    </div>
+    ${p ? `<div class="levels">
+      <div class="level"><span>${p.entryType === 'limit' ? 'دخول بأمر معلّق' : 'دخول فوري'}</span><b>${fmt(p.entry)}</b></div>
+      <div class="level sl"><span>وقف الخسارة</span><b>${fmt(p.stopLoss)}</b></div>
+      ${p.targets.map((t, i) => `<div class="level tp"><span>الهدف ${i + 1} (${R(t)}R)</span><b>${fmt(t)}</b></div>`).join('')}
+      <div class="level"><span>العائد/المخاطرة</span><b>1 : ${p.riskReward}</b></div>
+    </div>
+    <label class="check small"><input type="checkbox" id="exShow" ${ex.show ? 'checked' : ''} /> 📍 ارسم خطة الخبير على الشارت</label>` : ''}
+    ${review.notes?.length && review.status !== 'wait' ? `<p class="small">🛡️ ${review.notes.map(esc).join('<br>🛡️ ')}</p>` : ''}
+    ${(ai.reasons || []).length ? `<h4>لماذا؟</h4><ul class="factors">${ai.reasons.map((r) => `<li>✓ ${esc(r)}</li>`).join('')}</ul>` : ''}
+    ${ai.technical_summary ? `<p>${esc(ai.technical_summary)}</p>` : ''}
+    ${news.summary || (news.upcoming_events || []).length ? `<div class="news-box"><b>📰 ${esc(news.summary || 'الأخبار')}</b>
+      ${(news.upcoming_events || []).length ? `<div class="small" style="margin-top:.3rem"><b>أحداث قادمة:</b><ul>${news.upcoming_events.map((e) => `<li class="${/عالي|high/i.test(e.impact) ? 'down' : ''}">${esc(e.event)} ${e.time_utc ? '— ' + esc(e.time_utc) + ' UTC' : ''} (${esc(e.impact || '')})</li>`).join('')}</ul></div>` : ''}
+      ${(news.headlines || []).length ? `<ul class="small">${news.headlines.slice(0, 5).map((h) => `<li class="${h.impact === 'إيجابي' ? 'up' : h.impact === 'سلبي' ? 'down' : ''}">${esc(h.title)} <span class="muted">${esc(h.source || '')}</span></li>`).join('')}</ul>` : ''}</div>` : ''}
+    ${ai.invalidation ? `<p class="small"><b>تُلغى الفكرة إذا:</b> ${esc(ai.invalidation)}</p>` : ''}
+    ${(ai.warnings || []).length ? `<p class="small muted">⚠️ ${ai.warnings.map(esc).join('<br>⚠️ ')}</p>` : ''}
+    ${ex.errors?.length ? `<p class="small muted">ملاحظات: ${ex.errors.map(esc).join(' | ')}</p>` : ''}
+    <p class="small muted">التوصية رأي احتمالي وليست ضماناً. التزم بوقف الخسارة ولا تخاطر بأكثر من 1% من رأس مالك.</p>`;
+  const cb = $('#exShow');
+  if (cb) cb.onchange = (e) => { live.expert.show = e.target.checked; renderChart(); };
 }
 
 // =====================================================================

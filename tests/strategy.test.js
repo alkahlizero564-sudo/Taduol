@@ -84,3 +84,43 @@ test('aggregate + makeHtfLookup use only completed higher-timeframe candles', as
   assert.equal(look(t + H), look(t), 'cached within the same HTF candle');
   assert.equal(makeHtfLookup(c, '1w', () => 1)(t), null);
 });
+
+test('reviewExpertPlan: accepts sane plans, fixes tight stops / low R:R, rejects nonsense', async () => {
+  const { reviewExpertPlan } = await import('../js/strategy.js');
+  const ctx = { price: 100, atr: 1 };
+  const ok = reviewExpertPlan({ decision: 'BUY', entry: 100, entry_type: 'فوري', stop_loss: 98.5, take_profits: [102.5, 104, 106] }, ctx);
+  assert.equal(ok.status, 'ok'); assert.equal(ok.riskReward, 1.67); assert.equal(ok.entryType, 'market');
+  const tight = reviewExpertPlan({ decision: 'SELL', entry: '100', stop_loss: '100.2', take_profits: ['99', '98'] }, ctx);
+  assert.equal(tight.status, 'fixed'); assert.ok(Math.abs(tight.stopLoss - 100.8) < 1e-9); assert.ok(tight.riskReward >= 1.5);
+  const lowRR = reviewExpertPlan({ decision: 'BUY', entry: 100, stop_loss: 98, take_profits: [100.5] }, ctx);
+  assert.equal(lowRR.status, 'fixed'); assert.equal(lowRR.targets[0], 103); assert.equal(lowRR.targets.length, 3);
+  assert.equal(reviewExpertPlan({ decision: 'BUY', entry: 100, stop_loss: 101, take_profits: [103] }, ctx).status, 'rejected');
+  assert.equal(reviewExpertPlan({ decision: 'BUY', entry: 104, stop_loss: 103, take_profits: [106] }, ctx).status, 'rejected');
+  assert.equal(reviewExpertPlan({ decision: 'BUY', entry: 100, stop_loss: 94, take_profits: [110] }, ctx).status, 'rejected');
+  assert.equal(reviewExpertPlan({ decision: 'WAIT' }, ctx).status, 'wait');
+  assert.equal(reviewExpertPlan({ decision: 'BUY', entry: 98, entry_type: 'أمر معلّق', stop_loss: 96.5, take_profits: [101] }, ctx).entryType, 'limit');
+});
+
+test('committeeVerdict: confirmed only when AI and engine agree on an A setup; news and conflicts force a wait', async () => {
+  const { reviewExpertPlan, committeeVerdict } = await import('../js/strategy.js');
+  const ctx = { price: 100, atr: 1 };
+  const ai = { decision: 'BUY', entry: 100, stop_loss: 98.5, take_profits: [102.5], news: { high_impact_soon: false } };
+  const rv = reviewExpertPlan(ai, ctx);
+  assert.equal(committeeVerdict(ai, rv, { side: 'BUY', grade: 'A' }).level, 'strong');
+  assert.equal(committeeVerdict(ai, rv, { side: 'BUY', grade: 'B' }).level, 'weak');
+  assert.equal(committeeVerdict(ai, rv, { side: 'SELL', grade: 'A' }).level, 'wait');
+  const news = { ...ai, news: { high_impact_soon: true, upcoming_events: [{ event: 'قرار الفائدة الأمريكية', time_utc: '18:00', impact: 'عالي' }] } };
+  const v = committeeVerdict(news, rv, { side: 'BUY', grade: 'A' });
+  assert.equal(v.level, 'wait'); assert.match(v.reasons[0], /قرار الفائدة/);
+  assert.equal(committeeVerdict({ decision: 'WAIT' }, reviewExpertPlan({ decision: 'WAIT' }, ctx), { side: 'BUY', grade: 'A' }).level, 'wait');
+});
+
+test('reviewExpertPlan never returns R:R below 1.5 (even after widening a tight stop)', async () => {
+  const { reviewExpertPlan } = await import('../js/strategy.js');
+  // نفس حالة الذهب: وقف 7.5$ مع ATR 21.5 → يتوسع إلى 17.2، والهدف الأول 21.5 فقط (1.25R)
+  const r = reviewExpertPlan({ decision: 'BUY', entry: 4103.5, stop_loss: 4096, take_profits: [4125, 4155, 4190] }, { price: 4103.72, atr: 21.5 });
+  assert.equal(r.status, 'fixed');
+  assert.ok(r.riskReward >= 1.5, 'RR ' + r.riskReward);
+  assert.equal(r.targets[0], 4155, 'uses the next real target (≈3R) instead of the too-close one');
+  assert.ok(r.targets.every((t, i, a) => i === 0 || t > a[i - 1]));
+});
